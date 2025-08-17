@@ -11,7 +11,6 @@ using UnityEngine.SceneManagement;
 
 namespace ScreenCapture
 {
-    // Token: 0x02000002 RID: 2
     public class Main : Mod
     {
         public static FolderPath ScreenCaptureFolder { get; private set; }
@@ -41,26 +40,40 @@ namespace ScreenCapture
         }
 
         public override void Load()
-        {
+        {   // Initialize mod components and register scene-specific event handlers
             base.Load();
-            SceneHelper.OnSceneLoaded += new Action<Scene>(this.OnSceneLoadedHandler);
+            
+            ScreenCaptureFolder = FileHelper.InsertIo("ScreenCaptures", FileHelper.savingFolder);
+            
+            SceneHelper.OnWorldSceneLoaded += CreateScreenCaptureUI;
+            SceneHelper.OnWorldSceneUnloaded += DestroyScreenCaptureUI;
+            
+            // Create persistent capture instance
+            if (s_captureInstance == null)
+            {
+                GameObject captureObject = new GameObject("ScreenCapture_Persistent");
+                s_captureInstance = captureObject.AddComponent<Captue>();
+                UnityEngine.Object.DontDestroyOnLoad(captureObject);
+            }
         }
 
         public override void Early_Load()
         {
             base.Early_Load();
-            ScreenCaptureFolder = FileHelper.InsertIo("ScreenCaptures", FileHelper.savingFolder);
         }
 
         private static Captue s_captureInstance;
 
-        private void OnSceneLoadedHandler(Scene scene)
-        {   // Ensure a single persistent Captue exists across scene loads
-            if (s_captureInstance == null)
-            {
-                var s_captureInstance = new GameObject("ScreenCapture_Persistent").AddComponent<Captue>();
-                UnityEngine.Object.DontDestroyOnLoad(s_captureInstance);
-            }
+        private void CreateScreenCaptureUI()
+        {   // Display the capture UI when entering the world scene
+            if (s_captureInstance != null)
+                s_captureInstance.ShowUI();
+        }
+
+        private void DestroyScreenCaptureUI() 
+        {   // Hide the capture UI when leaving the world scene
+            if (s_captureInstance != null)
+                s_captureInstance.HideUI();
         }
     }
 
@@ -69,43 +82,36 @@ namespace ScreenCapture
         public static FolderPath savingFolder = (FolderPath)typeof(FileLocations).GetProperty("SavingFolder", BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
         
         private static FolderPath InsertIntoSfS(string relativePath, FolderPath baseFolder, byte[] fileBytes = null, Stream inputStream = null)
-        {   // Core insert function: creates a folder or writes a file inside specified base folder
-            // If fileBytes or inputStream is provided the call writes a file; otherwise it creates a folder
-
+        {
             if (inputStream != null && !inputStream.CanRead)
                 throw new ArgumentException("inputStream must be readable.", nameof(inputStream));
             
-            // Use provided base folder
             var baseFull = baseFolder.ToString();
             
-            // Create base directory if it doesn't exist
             if (!Directory.Exists(baseFull))
                 Directory.CreateDirectory(baseFull);
 
-            // Simple path combination
             var combinedFull = Path.Combine(baseFull, relativePath);
             var isFile = (fileBytes != null) || (inputStream != null);
             
             if (!isFile)
-            {   // Create folder and return its path
+            {
                 if (!Directory.Exists(combinedFull))
                     Directory.CreateDirectory(combinedFull);
 
                 return new FolderPath(combinedFull);
             }
 
-            // Ensure destination directory exists for file write
             var destinationDir = Path.GetDirectoryName(combinedFull) ?? baseFull;
             if (!Directory.Exists(destinationDir))
                 Directory.CreateDirectory(destinationDir);
 
-            // Write file from provided byte[] or Stream
             using (var output = new FileStream(combinedFull, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 if (fileBytes != null)
                     output.Write(fileBytes, 0, fileBytes.Length);
                 else
-                {   // inputStream is not null here and is readable
+                {
                     if (inputStream.CanSeek)
                         inputStream.Position = 0;
                     inputStream.CopyTo(output);

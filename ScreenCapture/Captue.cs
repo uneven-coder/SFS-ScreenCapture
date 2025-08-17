@@ -19,7 +19,6 @@ namespace ScreenCapture
         private Camera mainCamera;
         private int resolutionWidth = 1980;
         private float zoomFactor = 1f;
-        private string currentWorldName = "Unknown";
         private Window screenCaptureWindow;
         private GameObject uiHolder;
 
@@ -33,10 +32,6 @@ namespace ScreenCapture
         {   // Create and display the screenshot UI
             if (uiHolder != null) 
                 return;  // UI already exists
-                
-            // Update world name for saving
-            if (Base.worldBase != null)
-                currentWorldName = GetWorldName();
                 
             // Create UI elements
             uiHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSRecorder");
@@ -112,7 +107,8 @@ namespace ScreenCapture
 
                 byte[] pngBytes = screenshotTexture.EncodeToPNG();
 
-                var worldFolder = CreateWorldFolder(currentWorldName);
+                // Get current world name at time of screenshot
+                var worldFolder = CreateWorldFolder(GetWorldName());
                 
                 string fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
                 
@@ -129,6 +125,8 @@ namespace ScreenCapture
             {
                 this.mainCamera.targetTexture = null;
                 RenderTexture.active = null;
+
+                
 
                 this.mainCamera.orthographic = previousOrthographic;
                 this.mainCamera.orthographicSize = previousOrthographicSize;
@@ -151,30 +149,7 @@ namespace ScreenCapture
             return InsertIo(sanitizedName, Main.ScreenCaptureFolder);
         }
 
-        private string GetWorldName()
-        {
-            try
-            {
-                if (Base.worldBase == null)
-                    return "Unknown";
-
-                var playerLocationPath = Base.worldBase.GetType()
-                    .GetMethod("GetPlayerLocationPath", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)?
-                    .Invoke(Base.worldBase, null) as string;
-
-                if (!string.IsNullOrEmpty(playerLocationPath))
-                {
-                    var folderParts = playerLocationPath.Split(new char[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
-                    if (folderParts.Length >= 2)
-                        return folderParts[folderParts.Length - 2];
-                }
-            }
-            catch (Exception ex)
-            {
-                UnityEngine.Debug.LogError($"Failed to get world name: {ex.Message}");
-            }
-            
-            return "Unknown";
-        }
+        private string GetWorldName() =>
+            (Base.worldBase?.paths?.worldName) ?? "Unknown";  // Get world name directly or use "Unknown" as fallback
     }
 }

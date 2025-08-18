@@ -21,6 +21,7 @@ namespace ScreenCapture
     internal class Captue : MonoBehaviour
     {
         private Camera mainCamera;
+        private Camera previewCamera; // Dedicated camera for preview rendering
         private int resolutionWidth = 1980;
         private int previewWidth = 384;
         private float zoomFactor = 1f;
@@ -28,6 +29,8 @@ namespace ScreenCapture
         private GameObject uiHolder;
         private RawImage previewImage;
         private RenderTexture previewRT;
+        private bool showBackground = true;
+        private bool showTerrain = true;
         private int lastScreenWidth;
         private int lastScreenHeight;
 
@@ -92,6 +95,10 @@ namespace ScreenCapture
             // bottom.Size = new Vector2(670f, 70f);
             bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
 
+            // Add toggles to control which layers are visible in preview and final capture
+            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showBackground, () => { showBackground = !showBackground; UpdatePreviewCulling(); }, 0, 0, "Show Background");
+            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showTerrain, () => { showTerrain = !showTerrain; UpdatePreviewCulling(); }, 0, 0, "Show Terrain");
+
             Builder.CreateButton(bottom, 180, 60, 0, 0, TakeScreenshot, "Capture");
             Builder.CreateTextInput(bottom, 160, 60, 0, 0, resolutionWidth.ToString(), new UnityEngine.Events.UnityAction<string>(OnResolutionInputChange));
 
@@ -120,6 +127,12 @@ namespace ScreenCapture
                 previewRT = null;
             }
 
+            if (previewCamera != null)
+            {   // Destroy the preview camera to avoid lingering state
+                UnityEngine.Object.Destroy(previewCamera.gameObject);
+                previewCamera = null;
+            }
+
             previewImage = null;
 
             // Clean up any orphaned UI elements
@@ -141,6 +154,149 @@ namespace ScreenCapture
             int rtHeight = Mathf.RoundToInt(previewWidth / screenAspect);
             
             previewRT = new RenderTexture(previewWidth, rtHeight, 0) { antiAliasing = 1, filterMode = FilterMode.Bilinear };
+        }
+
+        private void EnsurePreviewCamera()
+        {   // Create or sync a dedicated preview camera cloned from the main camera
+            if (mainCamera == null)
+                return;
+
+            if (previewCamera == null)
+            {
+                var go = new GameObject("ScreenCapture_PreviewCamera");
+                go.hideFlags = HideFlags.DontSave;
+                previewCamera = go.AddComponent<Camera>();
+                previewCamera.enabled = false;
+            }
+
+            // Mirror transform and camera settings
+            previewCamera.transform.position = mainCamera.transform.position;
+            previewCamera.transform.rotation = mainCamera.transform.rotation;
+            previewCamera.transform.localScale = mainCamera.transform.localScale;
+
+            previewCamera.CopyFrom(mainCamera);
+            previewCamera.enabled = false;  // Only render manually
+            previewCamera.targetTexture = previewRT;
+            previewCamera.cullingMask = ComputeCullingMask();
+        }
+
+        private int ComputeCullingMask()
+        {   // Compute a culling mask for preview/capture; only strip known background layers
+            int mask = mainCamera != null ? mainCamera.cullingMask : ~0;  
+
+            if (!showBackground)
+            {
+                int stars = LayerMask.GetMask("Stars");
+                if (stars != 0)
+                    mask &= ~stars;  
+            }
+
+            return mask;
+        }
+
+        private void ApplyCullingForRender(Camera cam)
+        {   // Apply the computed culling mask to the given camera and refresh preview immediately
+            if (cam == null)
+                return;
+            cam.cullingMask = ComputeCullingMask();
+        }
+
+        private void UpdatePreviewCulling()
+        {   // Re-render preview using the dedicated camera with current visibility toggles
+            if (previewRT == null)
+                return;
+
+            EnsurePreviewCamera();
+            if (previewCamera == null)
+                return;
+
+            previewCamera.cullingMask = ComputeCullingMask();
+
+            // Apply visibility changes temporarily for this preview frame
+            var modified = ApplySceneVisibilityTemporary();
+
+            var prevTarget = previewCamera.targetTexture;
+            previewCamera.targetTexture = previewRT;
+            previewCamera.Render();
+            previewCamera.targetTexture = prevTarget;
+
+            // Restore original renderer enabled states so changes are preview-only
+            RestoreSceneVisibility(modified);
+        }
+
+        private bool IsAtmosphereObject(GameObject go)
+        {   // Detect objects that represent atmosphere either by name or by having an Atmosphere component
+            if (go == null)
+                return false;
+            var name = go.name ?? string.Empty;
+            if (name.IndexOf("atmosphere", StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+
+            // Check for component from SFS.World
+            return go.GetComponent<Atmosphere>() != null;
+        }
+
+        private System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> ApplySceneVisibilityTemporary()
+        {   // Temporarily disable renderers according to toggles and return list of changed renderers
+            var changed = new System.Collections.Generic.List<(Renderer, bool)>();
+
+            var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(includeInactive: true);
+
+            foreach (var r in renderers)
+            {
+                if (r == null || r.gameObject == null)
+                    continue;
+
+                // Skip UI elements (detect by RectTransform parent presence)
+                if (r.GetComponentInParent<RectTransform>() != null)
+                    continue;
+
+                var go = r.gameObject;
+                string layerName = LayerMask.LayerToName(go.layer) ?? string.Empty;
+
+                // Always show Parts layer
+                if (string.Equals(layerName, "Parts", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                bool isTerrain = go.GetComponentInParent<SFS.World.StaticWorldObject>() != null ||
+                                 go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;  
+                bool isAtmosphere = IsAtmosphereObject(go);
+                bool isStars = string.Equals(layerName, "Stars", StringComparison.OrdinalIgnoreCase) || go.name.IndexOf("star", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                bool shouldDisable = false;
+
+                // Background toggle hides stars and atmosphere, but never terrain
+                if (!showBackground && (isStars || isAtmosphere))
+                    shouldDisable = true;
+
+                // Terrain toggle explicitly hides terrain objects
+                if (!showTerrain && isTerrain)
+                    shouldDisable = true;
+
+                if (shouldDisable && r.enabled)
+                {
+                    changed.Add((r, r.enabled));
+                    r.enabled = false;
+                }
+            }
+
+            return changed;
+        }
+
+        private void RestoreSceneVisibility(System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> changed)
+        {   // Restore renderer enabled states saved by ApplySceneVisibilityTemporary
+            if (changed == null)
+                return;
+
+            foreach (var entry in changed)
+            {
+                try
+                {
+                    if (entry.renderer != null)
+                        entry.renderer.enabled = entry.previousEnabled;
+                }
+                catch { }
+            }
         }
 
         private void SetupPreview(Container imageContainer)
@@ -177,6 +333,10 @@ namespace ScreenCapture
                 previewRT.Create();
 
             previewImage.texture = previewRT;
+
+            // Ensure preview camera exists and render once
+            EnsurePreviewCamera();
+            UpdatePreviewCulling();
         }
 
         private void Update()
@@ -223,10 +383,22 @@ namespace ScreenCapture
                     previewImage.texture = previewRT;
                 }
 
-                var prevTarget = mainCamera.targetTexture;
-                mainCamera.targetTexture = previewRT;
-                mainCamera.Render();
-                mainCamera.targetTexture = prevTarget;
+                EnsurePreviewCamera();
+                if (previewCamera != null)
+                {
+                    previewCamera.cullingMask = ComputeCullingMask();
+
+                    // Apply visibility changes temporarily for this preview frame
+                    var modified = ApplySceneVisibilityTemporary();
+
+                    var prevTarget = previewCamera.targetTexture;
+                    previewCamera.targetTexture = previewRT;
+                    previewCamera.Render();
+                    previewCamera.targetTexture = prevTarget;
+
+                    // Restore scene state
+                    RestoreSceneVisibility(modified);
+                }
             }
         }
 
@@ -297,8 +469,19 @@ namespace ScreenCapture
                 this.mainCamera.fieldOfView = previousFieldOfView;
                 QualitySettings.antiAliasing = 0;
 
+                // Apply culling mask according to toggles for the final render
+                var prevMask = this.mainCamera.cullingMask;
+                ApplyCullingForRender(this.mainCamera);
+
+                // Temporarily apply scene visibility rules for this capture only
+                var modified = ApplySceneVisibilityTemporary();
+
                 this.mainCamera.targetTexture = renderTexture;
                 this.mainCamera.Render();
+
+                // Restore scene renderers and camera mask
+                RestoreSceneVisibility(modified);
+                this.mainCamera.cullingMask = prevMask;
 
                 RenderTexture.active = renderTexture;
 

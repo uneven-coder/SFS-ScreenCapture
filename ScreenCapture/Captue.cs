@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Linq;
+using JetBrains.Annotations;
 using ModLoader;
 using SFS;
 using SFS.IO;
@@ -69,18 +70,17 @@ namespace ScreenCapture
             wasMinimized = closableWindow.Minimized;
 
             // Root vertical layout to host top and bottom sections
-            closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 8f, new RectOffset(6, 6, 24, 6), true);
+            closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 28f, new RectOffset(6, 6, 10, 6), false);
 
-            var ImageContainer = Builder.CreateContainer(closableWindow, 0, -120);
-            // ImageContainer.rectTransform.anchoredPosition = new Vector2(0, -120);
-            // left.Size = new Vector2(520f, 430f);
-            // Build preview RawImage with proper scaling to fit container
+            var ImageContainer = Builder.CreateContainer(closableWindow, 0, 0);
             SetupPreview(ImageContainer);
 
+            Builder.CreateSeparator(closableWindow, 80, 0, 0);
+            
             // Bottom row (70x670): Capture button (left) and resolution input (right)
             var bottom = Builder.CreateContainer(closableWindow, 0, 0);
             // bottom.Size = new Vector2(670f, 70f);
-            bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleCenter, 10f, null, true);
+            bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
 
             Builder.CreateButton(bottom, 180, 60, 0, 0, TakeScreenshot, "Capture");
             Builder.CreateTextInput(bottom, 160, 60, 0, 0, resolutionWidth.ToString(), new UnityEngine.Events.UnityAction<string>(OnResolutionInputChange));
@@ -138,15 +138,19 @@ namespace ScreenCapture
 
             var previewGO = new GameObject("PreviewImage");
             previewGO.transform.SetParent(imageContainer.rectTransform, false);
-            previewGO.transform.localPosition = new Vector3(270, -120, 0);
+            // previewGO.transform.localPosition = new Vector3(270, -120, 0);
 
             var rect = previewGO.AddComponent<RectTransform>();
             
             // Calculate preview dimensions using helper method
             var (finalWidth, finalHeight) = CalculatePreviewDimensions();
             rect.sizeDelta = new Vector2(finalWidth, finalHeight);
-            rect.anchorMin = new Vector2(0.5f, 0.5f);
-            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            
+            // Provide explicit layout sizing so the parent vertical layout places the controls below the preview
+            var layout = imageContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ??
+                         imageContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+            layout.preferredWidth = finalWidth;
+            layout.preferredHeight = finalHeight + 8f; // small padding so controls don't touch the preview
 
             previewImage = previewGO.AddComponent<UnityEngine.UI.RawImage>();
             previewImage.color = Color.white;

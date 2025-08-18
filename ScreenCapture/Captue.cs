@@ -70,10 +70,20 @@ namespace ScreenCapture
             wasMinimized = closableWindow.Minimized;
 
             // Root vertical layout to host top and bottom sections
-            closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 28f, new RectOffset(6, 6, 10, 6), false);
+            closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 25f, new RectOffset(6, 6, 10, 6), false);
 
-            var ImageContainer = Builder.CreateContainer(closableWindow, 0, 0);
+            var toolsContainer = Builder.CreateContainer(closableWindow, 0, 0);
+            toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 12f, null, true);
+
+            var ImageContainer = Builder.CreateContainer(toolsContainer, 0, 0);
             SetupPreview(ImageContainer);
+
+            var Hierarchy  = Builder.CreateBox(toolsContainer, 310, 300, 0, 0, 0.5f);
+            Hierarchy.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 4f, new RectOffset(3, 3, 6, 4), true);
+
+            Builder.CreateLabel(Hierarchy, 200, 30, 0, 0, "Hierarchy");
+
+
 
             Builder.CreateSeparator(closableWindow, 80, 0, 0);
             

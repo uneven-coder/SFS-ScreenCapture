@@ -1,0 +1,33 @@
+	set bg color
+		hides the atmosphere and stars also can hide planet
+	screenshot just a select area
+~~ 	files are named with world name and date and time
+	save to screenshot folder
+	show preview with a lowq version
+	show/hide specific rockets
+??	freecam
+		freezes time on freecam enter
+~~	sort images into folders by world name
+
+make the window open/closable so the preview is only captured when open
+
+window should show:
+~~	resolution width
+~~	capture button
+~~	preview image
+
+~~	show background option
+~~	background color option / transparent
+~~	show planet/ground
+	
+	hide specific rockets
+	hide all button
+
+	capture area
+
+	show estimated file size
+	show int error/vram error when image size is too big
+
+fix ui layout
+
+Makewindow closed by defult

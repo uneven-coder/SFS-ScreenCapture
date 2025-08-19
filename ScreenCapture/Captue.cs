@@ -34,6 +34,11 @@ namespace ScreenCapture
         private int lastScreenWidth;
         private int lastScreenHeight;
 
+        // Background customization UI/state
+        private Window bgWindow;
+        private float bgR = 0f, bgG = 0f, bgB = 0f;  // Background color (0-255 via UI, stored as 0-1 normalized)
+        private bool bgTransparent = true;          // When true, force alpha 0
+
         private Action windowOpenedAction;
         private Action windowCollapsedAction;
         private bool wasMinimized;
@@ -92,11 +97,10 @@ namespace ScreenCapture
             
             // Bottom row (70x670): Capture button (left) and resolution input (right)
             var bottom = Builder.CreateContainer(closableWindow, 0, 0);
-            // bottom.Size = new Vector2(670f, 70f);
             bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
 
             // Add toggles to control which layers are visible in preview and final capture
-            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showBackground, () => { showBackground = !showBackground; UpdatePreviewCulling(); }, 0, 0, "Show Background");
+            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showBackground, () => { showBackground = !showBackground; UpdatePreviewCulling(); UpdateBackgroundWindowVisibility(); }, 0, 0, "Show Background");
             Builder.CreateToggleWithLabel(bottom, 160, 30, () => showTerrain, () => { showTerrain = !showTerrain; UpdatePreviewCulling(); }, 0, 0, "Show Terrain");
 
             Builder.CreateButton(bottom, 180, 60, 0, 0, TakeScreenshot, "Capture");
@@ -105,6 +109,9 @@ namespace ScreenCapture
             // Apply open behavior immediately if window starts expanded
             if (!closableWindow.Minimized)
                 windowOpenedAction?.Invoke();
+
+            // Ensure BG window visibility matches initial state
+            UpdateBackgroundWindowVisibility();
         }
 
         public void HideUI()
@@ -133,6 +140,12 @@ namespace ScreenCapture
                 previewCamera = null;
             }
 
+            if (bgWindow != null)
+            {   // Destroy background settings window
+                UnityEngine.Object.Destroy(bgWindow.gameObject);
+                bgWindow = null;
+            }
+
             previewImage = null;
 
             // Clean up any orphaned UI elements
@@ -153,7 +166,7 @@ namespace ScreenCapture
             float screenAspect = (float)Screen.width / Screen.height;
             int rtHeight = Mathf.RoundToInt(previewWidth / screenAspect);
             
-            previewRT = new RenderTexture(previewWidth, rtHeight, 0) { antiAliasing = 1, filterMode = FilterMode.Bilinear };
+            previewRT = new RenderTexture(previewWidth, rtHeight, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1, filterMode = FilterMode.Bilinear };
         }
 
         private void EnsurePreviewCamera()
@@ -169,15 +182,87 @@ namespace ScreenCapture
                 previewCamera.enabled = false;
             }
 
-            // Mirror transform and camera settings
-            previewCamera.transform.position = mainCamera.transform.position;
-            previewCamera.transform.rotation = mainCamera.transform.rotation;
-            previewCamera.transform.localScale = mainCamera.transform.localScale;
-
             previewCamera.CopyFrom(mainCamera);
             previewCamera.enabled = false;  // Only render manually
             previewCamera.targetTexture = previewRT;
             previewCamera.cullingMask = ComputeCullingMask();
+
+            ApplyBackgroundSettingsToCamera(previewCamera);
+
+            // Mirror transform after CopyFrom to be safe
+            previewCamera.transform.position = mainCamera.transform.position;
+            previewCamera.transform.rotation = mainCamera.transform.rotation;
+            previewCamera.transform.localScale = mainCamera.transform.localScale;
+        }
+
+        private void ApplyBackgroundSettingsToCamera(Camera cam)
+        {   // Apply background clear flags/color based on toggles and user selection
+            if (cam == null)
+                return;
+
+            if (!showBackground)
+            {   // When background is hidden, use solid color/alpha per user choice
+                var color = new Color(bgR / 255f, bgG / 255f, bgB / 255f, bgTransparent ? 0f : 1f);
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = color;
+            }
+            else
+            {   // Use whatever the camera had (already copied from main for preview)
+                // No-op
+            }
+        }
+
+        private void UpdateBackgroundWindowVisibility()
+        {   // Show/hide background settings window based on UI state and background toggle
+            bool shouldShow = closableWindow != null && !closableWindow.Minimized && !showBackground;
+
+            if (shouldShow && bgWindow == null)
+            {   // Create window with controls
+                int id = Builder.GetRandomID();
+                bgWindow = Builder.CreateWindow(uiHolder.transform, id, 280, 320, (int)(closableWindow.Position.x + 700), (int)closableWindow.Position.y, draggable: true, savePosition: false, opacity: 1f, titleText: "Background");
+
+                var content = Builder.CreateContainer(bgWindow, 0, 0);
+                content.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 8f, new RectOffset(8, 8, 260, 8), true);
+
+                Builder.CreateToggleWithLabel(content, 200, 46, () => bgTransparent, () => {
+                    bgTransparent = !bgTransparent;
+                    UpdatePreviewCulling();
+                }, 0, 0, "Transparent BG");
+
+                // R input
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "R", ((int)bgR).ToString(), val => {
+                    if (int.TryParse(val, out int r))
+                    {
+                        bgR = Mathf.Clamp(r, 0, 255);
+                        UpdatePreviewCulling();
+                    }
+                });
+
+                // G input
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "G", ((int)bgG).ToString(), val => {
+                    if (int.TryParse(val, out int g))
+                    {
+                        bgG = Mathf.Clamp(g, 0, 255);
+                        UpdatePreviewCulling();
+                    }
+                });
+
+                // B input
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "B", ((int)bgB).ToString(), val => {
+                    if (int.TryParse(val, out int b))
+                    {
+                        bgB = Mathf.Clamp(b, 0, 255);
+                        UpdatePreviewCulling();
+                    }
+                });
+
+                Builder.CreateLabel(content, 200, 35, 0, 0, "RGB out of 255");
+            }
+            else if (!shouldShow && bgWindow != null)
+            {   // Destroy when not needed
+                UnityEngine.Object.Destroy(bgWindow.gameObject);
+                bgWindow = null;
+            }
         }
 
         private int ComputeCullingMask()
@@ -211,6 +296,7 @@ namespace ScreenCapture
                 return;
 
             previewCamera.cullingMask = ComputeCullingMask();
+            ApplyBackgroundSettingsToCamera(previewCamera);
 
             // Apply visibility changes temporarily for this preview frame
             var modified = ApplySceneVisibilityTemporary();
@@ -304,7 +390,6 @@ namespace ScreenCapture
 
             var previewGO = new GameObject("PreviewImage");
             previewGO.transform.SetParent(imageContainer.rectTransform, false);
-            // previewGO.transform.localPosition = new Vector3(270, -120, 0);
 
             var rect = previewGO.AddComponent<RectTransform>();
             
@@ -353,6 +438,8 @@ namespace ScreenCapture
                     windowOpenedAction?.Invoke();
 
                 wasMinimized = minimized;
+
+                UpdateBackgroundWindowVisibility();
             }
 
             // Check for screen size changes and update render texture accordingly
@@ -387,6 +474,7 @@ namespace ScreenCapture
                 if (previewCamera != null)
                 {
                     previewCamera.cullingMask = ComputeCullingMask();
+                    ApplyBackgroundSettingsToCamera(previewCamera);
 
                     // Apply visibility changes temporarily for this preview frame
                     var modified = ApplySceneVisibilityTemporary();
@@ -458,11 +546,13 @@ namespace ScreenCapture
             bool previousOrthographic = this.mainCamera.orthographic;
             float previousOrthographicSize = this.mainCamera.orthographicSize;
             float previousFieldOfView = this.mainCamera.fieldOfView;
+            var prevClearFlags = this.mainCamera.clearFlags;
+            var prevBgColor = this.mainCamera.backgroundColor;
 
             try
             {
-                renderTexture = new RenderTexture(width, height, 24);
-                screenshotTexture = new Texture2D(width, height, TextureFormat.RGB24, false);
+                renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                screenshotTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
 
                 this.mainCamera.orthographic = false;
                 this.mainCamera.orthographicSize = previousOrthographicSize / this.zoomFactor;
@@ -473,15 +563,20 @@ namespace ScreenCapture
                 var prevMask = this.mainCamera.cullingMask;
                 ApplyCullingForRender(this.mainCamera);
 
+                // Apply background settings (only when background hidden)
+                ApplyBackgroundSettingsToCamera(this.mainCamera);
+
                 // Temporarily apply scene visibility rules for this capture only
                 var modified = ApplySceneVisibilityTemporary();
 
                 this.mainCamera.targetTexture = renderTexture;
                 this.mainCamera.Render();
 
-                // Restore scene renderers and camera mask
+                // Restore scene renderers and camera settings
                 RestoreSceneVisibility(modified);
                 this.mainCamera.cullingMask = prevMask;
+                this.mainCamera.clearFlags = prevClearFlags;
+                this.mainCamera.backgroundColor = prevBgColor;
 
                 RenderTexture.active = renderTexture;
 

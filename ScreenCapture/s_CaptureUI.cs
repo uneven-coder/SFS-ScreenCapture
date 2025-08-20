@@ -1,11 +1,13 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Globalization;
 using SFS;
 using SFS.IO;
 using SFS.UI.ModGUI;
 using SFS.World;
 using UnityEngine;
+using UnityEngine.UI;
 using static ScreenCapture.FileHelper;
 using static UITools.UIToolsBuilder;
 
@@ -15,7 +17,7 @@ namespace ScreenCapture
     {   // Build and control the capture UI bound directly to a Captue instance
         public static Window bgWindow;
         public static float bgR = 0f, bgG = 0f, bgB = 0f;
-        public static bool bgTransparent = true;
+        public static bool bgTransparent = false;
 
         private static Captue currentOwner;
         private static Container previewContainer;
@@ -39,46 +41,140 @@ namespace ScreenCapture
 
             owner.closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, new RectOffset(6, 6, 10, 6), false);
 
-            var toolsContainer = Builder.CreateContainer(owner.closableWindow, 0, 0);
-            toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 12f, null, true);
+            Container CreateToolsContainer()
+            {   // Create preview area and hierarchy panel
+                var toolsContainer = Builder.CreateContainer(owner.closableWindow, 0, 0);
+                toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 12f, null, true);
 
-            previewContainer = Builder.CreateContainer(toolsContainer, 0, 0);
-            previewContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 4f, new RectOffset(3, 3, 6, 4), true);
+                previewContainer = Builder.CreateContainer(toolsContainer, 0, 0);
+                previewContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 4f, new RectOffset(3, 3, 6, 4), true);
 
-            // Initialize preview immediately so it renders while the window is open
-            owner.SetupPreview(previewContainer);
-            previewInitialized = true;
+                // Initialize preview immediately so it renders while the window is open
+                owner.SetupPreview(previewContainer);
+                MakePreviewNonBlocking();
+                previewInitialized = true;
 
-            var hierarchy = Builder.CreateBox(toolsContainer, 310, 300, 0, 0, 0.5f);
-            hierarchy.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 4f, new RectOffset(3, 3, 6, 4), true);
-            Builder.CreateLabel(hierarchy, 200, 30, 0, 0, "Hierarchy");
+                var hierarchy = Builder.CreateBox(toolsContainer, 310, 300, 0, 0, 0.5f);
+                hierarchy.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 4f, new RectOffset(3, 3, 6, 4), true);
+                Builder.CreateLabel(hierarchy, 200, 30, 0, 0, "Hierarchy");
 
-            Builder.CreateSeparator(owner.closableWindow, 80, 0, 0);
+                return toolsContainer;
+            }
 
-            var bottom = Builder.CreateContainer(owner.closableWindow, 0, 0);
-            bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
+            Container CreateBottomContainer()
+            {   // Create bottom column with scene toggles
+                var bottom = Builder.CreateContainer(owner.closableWindow, 0, 0);
+                bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
 
-            var col1 = Builder.CreateContainer(bottom, 0, 0);
-            col1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
+                var col1 = Builder.CreateContainer(bottom, 0, 0);
+                col1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
 
-            Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showBackground, () =>
-            {   // Toggle background visibility and adjust preview
-                owner.showBackground = !owner.showBackground;
-                owner.UpdatePreviewCulling();
-                UpdateBackgroundWindowVisibility();
-            }, 0, 0, "Show Background");
+                Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showBackground, () =>
+                {   // Toggle background visibility and adjust preview
+                    owner.showBackground = !owner.showBackground;
+                    owner.UpdatePreviewCulling();
+                    UpdateBackgroundWindowVisibility();
+                }, 0, 0, "Show Background");
 
-            Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showTerrain, () =>
-            {   // Toggle terrain visibility and adjust preview
-                owner.showTerrain = !owner.showTerrain;
-                owner.UpdatePreviewCulling();
-            }, 0, 0, "Show Terrain");
+                Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showTerrain, () =>
+                {   // Toggle terrain visibility and adjust preview
+                    owner.showTerrain = !owner.showTerrain;
+                    owner.UpdatePreviewCulling();
+                }, 0, 0, "Show Terrain");
 
-            var controls = Builder.CreateContainer(owner.closableWindow, 0, 0);
-            controls.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
+                                Builder.CreateSpace(bottom, 80, (37 * 2 + 20));
 
-            Builder.CreateButton(controls, 180, 58, 0, 0, owner.TakeScreenshot, "Capture");
-            Builder.CreateTextInput(controls, 180, 58, 0, 0, owner.resolutionWidth.ToString(), owner.OnResolutionInputChange);
+                var col2 = Builder.CreateContainer(bottom, 0, 0);
+                col2.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
+
+
+
+                var col2Row1 = Builder.CreateContainer(col2, 0, 0);
+                col2Row1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 5f, null, true);
+
+                Container CreateZoomControls()
+                {
+                    float GetZoom() => Mathf.Clamp(owner.previewZoom, 0.25f, 4f);  // Button/display factor in safe range
+                    float GetLevel() => owner.previewZoomLevel;  // Unbounded level for input
+
+                    void SetZoom(float z)
+                    {   // Persist and apply zoom through the owner (clamped for buttons)
+                        owner.SetPreviewZoom(z);
+                    }
+
+                    float StepInLog(float z, int dir)
+                    {   // Compute next zoom via log-space lerp across [0.25, 4] using discrete steps
+                        float min = 0.25f, max = 4f;
+                        int steps = 20; // non-linear resolution
+                        float lnMin = Mathf.Log(min), lnMax = Mathf.Log(max);
+                        float t = Mathf.InverseLerp(lnMin, lnMax, Mathf.Log(Mathf.Clamp(z, min, max)));
+                        int i = Mathf.Clamp(Mathf.RoundToInt(t * steps) + dir, 0, steps);
+                        float factor = Mathf.Exp(Mathf.Lerp(lnMin, lnMax, (float)i / steps));
+                        return Mathf.Abs(factor - 1f) <= 0.02f ? 1f : factor;
+                    }
+
+                    // Builder.CreateSpace(col2Row1, 15, 58);
+
+                    InputWithLabel zoomInput = null;
+                    zoomInput = Builder.CreateInputWithLabel(col2Row1, (120 *2 +10), 42, 0, 0, "Zoom", $"{GetLevel():0.00}", val =>
+                    {   // Parse unbounded zoom level from input
+                        if (string.IsNullOrWhiteSpace(val))
+                            return;
+
+                        if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float lvl))
+                        {
+                            owner.SetPreviewZoomLevelUnclamped(lvl);
+                            zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                        }
+                    });
+
+
+                    var bottomRow = Builder.CreateContainer(col2Row1, 0, 0);
+                    bottomRow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
+
+                    Builder.CreateButton(bottomRow, 120, 47, 0, 0, () =>
+                    {   // Decrease zoom using non-linear step (clamped factor)
+                        float z = StepInLog(GetZoom(), -1);
+                        SetZoom(z);
+                        zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                    }, "Zoom -");
+
+                    Builder.CreateButton(bottomRow, 120, 47, 0, 0, () =>
+                    {   // Increase zoom using non-linear step (clamped factor)
+                        float z = StepInLog(GetZoom(), +1);
+                        SetZoom(z);
+                        zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                    }, "Zoom +");
+
+                    return col2Row1;
+                }
+
+                CreateZoomControls();
+
+                return bottom;
+            }
+
+            Container CreateControlsContainer()
+            {   // Create capture controls for actions and resolution
+                var controls = Builder.CreateContainer(owner.closableWindow, 0, 0);
+                controls.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
+
+                Builder.CreateButton(controls, 180, 58, 0, 0, owner.TakeScreenshot, "Capture");
+                Builder.CreateTextInput(controls, 180, 58, 0, 0, owner.resolutionWidth.ToString(), owner.OnResolutionInputChange);
+
+                return controls;
+            }
+
+            CreateToolsContainer();
+
+            var separator = Builder.CreateSeparator(owner.closableWindow, 80, 0, 0);
+            var scale = separator.rectTransform.transform.localScale;
+            scale.y = 2f;
+            separator.rectTransform.transform.localScale = scale;
+            
+
+            CreateBottomContainer();
+            CreateControlsContainer();
 
             // Ensure preview is created when the window opens; pause when collapsed via minimized flag
             var prevOpen = owner.windowOpenedAction;
@@ -152,7 +248,21 @@ namespace ScreenCapture
                 return;
 
             owner.SetupPreview(previewContainer);
+            MakePreviewNonBlocking();
             previewInitialized = true;
+        }
+
+        private static void MakePreviewNonBlocking()
+        {   // Prevent preview UI from capturing pointer events over other controls
+            if (previewContainer == null)
+                return;
+
+            var go = previewContainer.gameObject;
+            if (go == null)
+                return;
+
+            foreach (var g in go.GetComponentsInChildren<Graphic>(true))
+                g.raycastTarget = false;
         }
 
         public static void UpdateBackgroundWindowVisibility()

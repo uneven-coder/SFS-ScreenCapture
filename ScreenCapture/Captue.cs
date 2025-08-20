@@ -26,7 +26,10 @@ public class Captue : MonoBehaviour
     internal int resolutionWidth = 1980;
     internal int previewWidth = 384;
     
-    internal float zoomFactor = 1f;
+    internal float zoomFactor = 0.1f;
+    internal float previewZoom = 1f; // Derived multiplier from previewZoomLevel
+    internal float previewZoomLevel = 0f; // Unbounded zoom level in log-space (0 -> 1x)
+    internal float previewBasePivotDistance = 100f; // Base distance in front of camera used for dolly when FOV saturates
     internal ClosableWindow closableWindow;
     internal GameObject uiHolder;
     public RawImage previewImage;
@@ -128,6 +131,82 @@ public class Captue : MonoBehaviour
         previewCamera.transform.position = mainCamera.transform.position;
         previewCamera.transform.rotation = mainCamera.transform.rotation;
         previewCamera.transform.localScale = mainCamera.transform.localScale;
+
+        ApplyPreviewZoom();
+    }
+
+    private static float SnapZoomLevel(float level)
+    {   // Snap to exact 1x (level 0) when multiplier is close to 1
+        float factor = Mathf.Exp(level);
+        return Mathf.Abs(factor - 1f) <= 0.02f ? 0f : level;
+    }
+
+    internal void SetPreviewZoom(float factor)
+    {   // Update preview zoom from buttons within safe factor range
+        float clamped = Mathf.Clamp(factor, 0.25f, 4f);
+        float level = Mathf.Log(Mathf.Max(clamped, 0.001f));
+        previewZoomLevel = SnapZoomLevel(level);
+        previewZoom = Mathf.Exp(previewZoomLevel);
+        ApplyPreviewZoom();
+    }
+
+    internal void SetPreviewZoomLevelUnclamped(float level)
+    {   // Update preview zoom level from input without clamping to button range
+        previewZoomLevel = SnapZoomLevel(level);
+        previewZoom = Mathf.Exp(previewZoomLevel);
+        ApplyPreviewZoom();
+    }
+
+    internal void ApplyPreviewZoom()
+    {   // Apply current previewZoomLevel to preview camera preserving main camera as baseline
+        if (previewCamera == null)
+            return;
+
+        float z = Mathf.Max(Mathf.Exp(previewZoomLevel), 1e-6f);
+
+        if (previewCamera.orthographic)
+        {   // Scale orthographic size inversely with zoom and allow large zoom swings
+            float baseSize = mainCamera != null ? Mathf.Max(mainCamera.orthographicSize, 1e-6f) : Mathf.Max(previewCamera.orthographicSize, 1e-6f);
+            previewCamera.orthographicSize = Mathf.Clamp(baseSize / z, 1e-6f, 1_000_000f);
+        }
+        else
+        {   // Use FOV; when outside [5, 120], dolly toward/away from a pivot along forward axis
+            float baseFov = mainCamera != null ? Mathf.Clamp(mainCamera.fieldOfView, 5f, 120f) : Mathf.Clamp(previewCamera.fieldOfView, 5f, 120f);
+            float rawFov = baseFov / z; // unbounded target FOV before clamping
+
+            if (rawFov >= 5f && rawFov <= 120f)
+            {   // Within FOV range, no dolly needed
+                previewCamera.fieldOfView = rawFov;
+                if (mainCamera != null)
+                    previewCamera.transform.position = mainCamera.transform.position;
+            }
+            else if (rawFov > 120f)
+            {   // Zoomed out beyond FOV: fix FOV and dolly back
+                previewCamera.fieldOfView = 120f;
+
+                if (mainCamera != null)
+                {
+                    var forward = mainCamera.transform.forward;
+                    var pivot = mainCamera.transform.position + forward * previewBasePivotDistance;
+                    float ratio = rawFov / 120f;
+                    float newDist = Mathf.Clamp(previewBasePivotDistance * ratio, previewBasePivotDistance, 1_000_000f);
+                    previewCamera.transform.position = pivot - forward * newDist;
+                }
+            }
+            else
+            {   // rawFov < 5: Zoomed in beyond FOV: fix FOV and dolly forward toward pivot
+                previewCamera.fieldOfView = 5f;
+
+                if (mainCamera != null)
+                {
+                    var forward = mainCamera.transform.forward;
+                    var pivot = mainCamera.transform.position + forward * previewBasePivotDistance;
+                    float ratio = 5f / Mathf.Max(rawFov, 1e-6f);
+                    float newDist = Mathf.Clamp(previewBasePivotDistance / ratio, 0.001f, previewBasePivotDistance);
+                    previewCamera.transform.position = pivot - forward * newDist;
+                }
+            }
+        }
     }
 
     public void ApplyBackgroundSettingsToCamera(Camera cam)
@@ -310,6 +389,7 @@ public class Captue : MonoBehaviour
             {
                 previewCamera.cullingMask = ComputeCullingMask();
                 ApplyBackgroundSettingsToCamera(previewCamera);
+                ApplyPreviewZoom();
 
                 var modified = ApplySceneVisibilityTemporary();
 
@@ -376,15 +456,49 @@ public class Captue : MonoBehaviour
         float previousFieldOfView = this.mainCamera.fieldOfView;
         var prevClearFlags = this.mainCamera.clearFlags;
         var prevBgColor = this.mainCamera.backgroundColor;
+        Vector3 previousPosition = this.mainCamera.transform.position;
 
         try
         {
             renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
             screenshotTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
 
-            this.mainCamera.orthographic = false;
-            this.mainCamera.orthographicSize = previousOrthographicSize / this.zoomFactor;
-            this.mainCamera.fieldOfView = previousFieldOfView;
+            // Apply the same zoom model as the preview (unbounded level -> factor)
+            float z = Mathf.Max(Mathf.Exp(this.previewZoomLevel), 1e-6f);
+
+            if (this.mainCamera.orthographic)
+            {   // Orthographic: scale size inversely with zoom
+                this.mainCamera.orthographicSize = Mathf.Clamp(previousOrthographicSize / z, 1e-6f, 1_000_000f);
+            }
+            else
+            {   // Perspective: use FOV when in range, otherwise dolly relative to a forward pivot
+                float baseFov = Mathf.Clamp(previousFieldOfView, 5f, 120f);
+                float rawFov = baseFov / z;
+
+                if (rawFov >= 5f && rawFov <= 120f)
+                    this.mainCamera.fieldOfView = rawFov;  // Within FOV range
+                else if (rawFov > 120f)
+                {   // Zoomed out beyond FOV
+                    this.mainCamera.fieldOfView = 120f;
+
+                    var fwd = this.mainCamera.transform.forward;
+                    var pivot = previousPosition + fwd * this.previewBasePivotDistance;
+                    float ratio = rawFov / 120f;
+                    float newDist = Mathf.Clamp(this.previewBasePivotDistance * ratio, this.previewBasePivotDistance, 1_000_000f);
+                    this.mainCamera.transform.position = pivot - fwd * newDist;
+                }
+                else
+                {   // rawFov < 5f: extreme zoom-in, dolly toward pivot
+                    this.mainCamera.fieldOfView = 5f;
+
+                    var fwd = this.mainCamera.transform.forward;
+                    var pivot = previousPosition + fwd * this.previewBasePivotDistance;
+                    float ratio = 5f / Mathf.Max(rawFov, 1e-6f);
+                    float newDist = Mathf.Clamp(this.previewBasePivotDistance / ratio, 0.001f, this.previewBasePivotDistance);
+                    this.mainCamera.transform.position = pivot - fwd * newDist;
+                }
+            }
+
             QualitySettings.antiAliasing = 0;
 
             var prevMask = this.mainCamera.cullingMask;
@@ -427,9 +541,11 @@ public class Captue : MonoBehaviour
             this.mainCamera.targetTexture = null;
             RenderTexture.active = null;
 
+            // Restore camera state
             this.mainCamera.orthographic = previousOrthographic;
             this.mainCamera.orthographicSize = previousOrthographicSize;
             this.mainCamera.fieldOfView = previousFieldOfView;
+            this.mainCamera.transform.position = previousPosition;
             QualitySettings.antiAliasing = previousAntiAliasing;
 
             if (renderTexture != null)

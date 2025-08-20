@@ -14,30 +14,14 @@ namespace ScreenCapture
     public class Main : Mod
     {
         public static FolderPath ScreenCaptureFolder { get; private set; }
+        private static Captue s_captureInstance;
 
-        public override string ModNameID
-        {
-            get { return "ScreenCapture"; }
-        }
-        public override string DisplayName
-        {
-            get { return "ScreenCapture"; }
-        }
-        public override string Author
-        {
-            get { return "Cratior"; }
-        }
-        public override string MinimumGameVersionNecessary
-        {
-            get { return "1.5.10"; }
-        }
-        public override string ModVersion
-        {
-            get { return "2.2.3"; } }
-        public override string Description
-        {
-            get { return "Adds a screenshot button to the world scene, allowing you to take screenshots at custom resolutions."; }
-        }
+        public override string ModNameID => "ScreenCapture";
+        public override string DisplayName => "ScreenCapture";
+        public override string Author => "Cratior";
+        public override string MinimumGameVersionNecessary => "1.5.10";
+        public override string ModVersion => "2.2.3";
+        public override string Description => "Adds a screenshot button to the world scene, allowing you to take screenshots at custom resolutions.";
 
         public override void Load()
         {   // Initialize mod components and register scene-specific event handlers
@@ -57,12 +41,7 @@ namespace ScreenCapture
             }
         }
 
-        public override void Early_Load()
-        {
-            base.Early_Load();
-        }
-
-        private static Captue s_captureInstance;
+        public override void Early_Load() => base.Early_Load();
 
         private void CreateScreenCaptureUI()
         {   // Display the capture UI when entering the world scene

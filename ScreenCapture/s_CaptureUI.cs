@@ -1,49 +1,38 @@
 using System;
-using UnityEngine;
-using UnityEngine.Events;
-using SFS.UI.ModGUI;
-using static UITools.UIToolsBuilder;
-using SFS.World;
 using System.IO;
 using System.Linq;
 using SFS;
 using SFS.IO;
+using SFS.UI.ModGUI;
+using SFS.World;
+using UnityEngine;
 using static ScreenCapture.FileHelper;
-using static ScreenCapture.CaptureUtilities;
+using static UITools.UIToolsBuilder;
 
 namespace ScreenCapture
 {
-    public class CaptureUIOptions
-    {
-        public Captue Owner;
-        public Func<bool> GetShowBackground;
-        public Action ToggleBackground;
-        public Func<bool> GetShowTerrain;
-        public Action ToggleTerrain;
-        public Action CaptureAction;
-        public UnityAction<string> ResolutionInputAction;
-        public Action OnWindowOpened;
-        public Action OnWindowCollapsed;
-        public Action UpdatePreviewCulling;
-        public Action UpdateBackgroundWindowVisibility;
-        public Action<Container> SetupPreview;
-    }
-
     public static class CaptureUI
-    {
+    {   // Build and control the capture UI bound directly to a Captue instance
         public static Window bgWindow;
         public static float bgR = 0f, bgG = 0f, bgB = 0f;
         public static bool bgTransparent = true;
 
-        public static void ShowUI(CaptureUIOptions options)
-        {
-            if (options == null || options.Owner == null)
+        private static Captue currentOwner;
+        private static Container previewContainer;
+        private static bool previewInitialized;
+
+        public static void ShowUI(Captue owner)
+        {   // Build and display UI for the given owner
+            if (owner == null)
                 return;
 
-            if (options.Owner.uiHolder != null)
+            if (owner.uiHolder != null)
                 return;
 
-            var owner = options.Owner;
+            currentOwner = owner;
+            previewInitialized = false;
+            previewContainer = null;
+
             owner.uiHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSRecorder");
             owner.closableWindow = CreateClosableWindow(owner.uiHolder.transform, Builder.GetRandomID(), 950, 600, 300, 100, true, true, 1f, "ScreenShot", minimized: false);
             owner.wasMinimized = owner.closableWindow.Minimized;
@@ -53,10 +42,12 @@ namespace ScreenCapture
             var toolsContainer = Builder.CreateContainer(owner.closableWindow, 0, 0);
             toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 12f, null, true);
 
-            var imageContainer = Builder.CreateContainer(toolsContainer, 0, 0);
-            imageContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 4f, new RectOffset(3, 3, 6, 4), true);
+            previewContainer = Builder.CreateContainer(toolsContainer, 0, 0);
+            previewContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 4f, new RectOffset(3, 3, 6, 4), true);
 
-            options.SetupPreview?.Invoke(imageContainer);
+            // Initialize preview immediately so it renders while the window is open
+            owner.SetupPreview(previewContainer);
+            previewInitialized = true;
 
             var hierarchy = Builder.CreateBox(toolsContainer, 310, 300, 0, 0, 0.5f);
             hierarchy.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 4f, new RectOffset(3, 3, 6, 4), true);
@@ -70,33 +61,47 @@ namespace ScreenCapture
             var col1 = Builder.CreateContainer(bottom, 0, 0);
             col1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
 
-            Builder.CreateToggleWithLabel(col1, 310, 37, options.GetShowBackground, () =>
-            {
-                options.ToggleBackground?.Invoke();
-                options.UpdatePreviewCulling?.Invoke();
-                options.UpdateBackgroundWindowVisibility?.Invoke();
+            Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showBackground, () =>
+            {   // Toggle background visibility and adjust preview
+                owner.showBackground = !owner.showBackground;
+                owner.UpdatePreviewCulling();
+                UpdateBackgroundWindowVisibility();
             }, 0, 0, "Show Background");
 
-            Builder.CreateToggleWithLabel(col1, 310, 37, options.GetShowTerrain, () =>
-            {
-                options.ToggleTerrain?.Invoke();
-                options.UpdatePreviewCulling?.Invoke();
+            Builder.CreateToggleWithLabel(col1, 310, 37, () => owner.showTerrain, () =>
+            {   // Toggle terrain visibility and adjust preview
+                owner.showTerrain = !owner.showTerrain;
+                owner.UpdatePreviewCulling();
             }, 0, 0, "Show Terrain");
 
             var controls = Builder.CreateContainer(owner.closableWindow, 0, 0);
             controls.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
 
-            Builder.CreateButton(controls, 180, 58, 0, 0, options.CaptureAction, "Capture");
-            Builder.CreateTextInput(controls, 180, 58, 0, 0, owner.resolutionWidth.ToString(), options.ResolutionInputAction);
+            Builder.CreateButton(controls, 180, 58, 0, 0, owner.TakeScreenshot, "Capture");
+            Builder.CreateTextInput(controls, 180, 58, 0, 0, owner.resolutionWidth.ToString(), owner.OnResolutionInputChange);
+
+            // Ensure preview is created when the window opens; pause when collapsed via minimized flag
+            var prevOpen = owner.windowOpenedAction;
+            owner.windowOpenedAction = () =>
+            {   // Initialize preview the first time the window opens
+                prevOpen?.Invoke();
+                EnsurePreviewSetup(owner);
+            };
+
+            var prevCollapse = owner.windowCollapsedAction;
+            owner.windowCollapsedAction = () =>
+            {   // Pause preview rendering when collapsed (handled by minimized flag in Captue.Update)
+                prevCollapse?.Invoke();
+            };
 
             if (!owner.closableWindow.Minimized)
-                options.OnWindowOpened?.Invoke();
+                owner.windowOpenedAction?.Invoke();
 
-            options.UpdateBackgroundWindowVisibility?.Invoke();
+            UpdateBackgroundWindowVisibility();
         }
 
         public static void HideUI(Captue owner)
-        {
+        {   // Tear down UI and related resources for the owner
             if (owner == null)
                 return;
 
@@ -130,16 +135,33 @@ namespace ScreenCapture
             }
 
             owner.previewImage = null;
+            previewContainer = null;
+            previewInitialized = false;
+
+            if (currentOwner == owner)
+                currentOwner = null;
 
             GameObject existing = GameObject.Find("SFSRecorder");
             if (existing != null)
                 UnityEngine.Object.Destroy(existing);
         }
 
+        private static void EnsurePreviewSetup(Captue owner)
+        {   // Lazily initialize the preview when window is opened
+            if (previewInitialized || previewContainer == null || owner == null)
+                return;
+
+            owner.SetupPreview(previewContainer);
+            previewInitialized = true;
+        }
+
         public static void UpdateBackgroundWindowVisibility()
-        {
-            var owner = CaptureUtilities.CaptueInstance;
-            bool shouldShow = owner != null && owner.closableWindow != null && !owner.closableWindow.Minimized && !owner.showBackground;
+        {   // Show or hide the background settings window next to the main window
+            var owner = currentOwner;
+            if (owner == null)
+                return;
+
+            bool shouldShow = owner.closableWindow != null && !owner.closableWindow.Minimized && !owner.showBackground;
 
             if (shouldShow && bgWindow == null)
             {
@@ -150,9 +172,10 @@ namespace ScreenCapture
                 content.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 8f, new RectOffset(8, 8, 260, 8), true);
 
                 Builder.CreateToggleWithLabel(content, 200, 46, () => bgTransparent, () =>
-                {
+                {   // Toggle transparency and refresh preview bg
                     bgTransparent = !bgTransparent;
-                    UpdatePreviewCulling();
+                    if (owner.previewCamera != null)
+                        owner.ApplyBackgroundSettingsToCamera(owner.previewCamera);
                 }, 0, 0, "Transparent BG");
 
                 Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "R", ((int)bgR).ToString(), val =>
@@ -160,7 +183,8 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int r))
                     {
                         bgR = Mathf.Clamp(r, 0, 255);
-                        UpdatePreviewCulling();
+                        if (owner.previewCamera != null)
+                            owner.ApplyBackgroundSettingsToCamera(owner.previewCamera);
                     }
                 });
 
@@ -169,7 +193,8 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int g))
                     {
                         bgG = Mathf.Clamp(g, 0, 255);
-                        UpdatePreviewCulling();
+                        if (owner.previewCamera != null)
+                            owner.ApplyBackgroundSettingsToCamera(owner.previewCamera);
                     }
                 });
 
@@ -178,7 +203,8 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int b))
                     {
                         bgB = Mathf.Clamp(b, 0, 255);
-                        UpdatePreviewCulling();
+                        if (owner.previewCamera != null)
+                            owner.ApplyBackgroundSettingsToCamera(owner.previewCamera);
                     }
                 });
 
@@ -193,24 +219,12 @@ namespace ScreenCapture
     }
 
     public static class CaptureUtilities
-    {
-        public static Captue CaptueInstance { get; set; }
-        private static int previewWidth = 384;
-
-        public static void UpdatePreviewCulling()
-        {   // Update the preview camera's culling and background settings
-            var instance = CaptueInstance;
-            if (instance == null || instance.previewCamera == null)
-                return;
-
-            instance.previewCamera.cullingMask = instance.ComputeCullingMask();
-            instance.ApplyBackgroundSettingsToCamera(instance.previewCamera);
-        }
-
+    {   // Stateless helpers for file-system and object checks
         public static bool IsAtmosphereObject(GameObject go)
-        {   // Determine if the GameObject is an atmosphere object
+        {   // Determine if a GameObject represents atmosphere
             if (go == null)
                 return false;
+
             var name = go.name ?? string.Empty;
             if (name.IndexOf("atmosphere", StringComparison.OrdinalIgnoreCase) >= 0)
                 return true;
@@ -218,22 +232,8 @@ namespace ScreenCapture
             return go.GetComponent<Atmosphere>() != null;
         }
 
-        public static void CreatePreviewRenderTexture()
-        {   // Create or recreate the preview RenderTexture
-            if (CaptueInstance.previewRT != null)
-            {
-                CaptueInstance.previewRT.Release();
-                UnityEngine.Object.Destroy(CaptueInstance.previewRT);
-            }
-
-            float screenAspect = (float)Screen.width / Screen.height;
-            int rtHeight = Mathf.RoundToInt(previewWidth / screenAspect);
-
-            CaptueInstance.previewRT = new RenderTexture(previewWidth, rtHeight, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1, filterMode = FilterMode.Bilinear };
-        }
-
         public static FolderPath CreateWorldFolder(string worldName)
-        {   // Create a folder for the current world
+        {   // Ensure a per-world folder exists
             string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
                                   new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
 

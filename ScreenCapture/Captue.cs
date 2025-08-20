@@ -18,33 +18,33 @@ using static UITools.UIToolsBuilder;
 
 namespace ScreenCapture
 {
-    internal class Captue : MonoBehaviour
+    public class Captue : MonoBehaviour
     {
-        private Camera mainCamera;
-        private Camera previewCamera; // Dedicated camera for preview rendering
-        private int resolutionWidth = 1980;
-        private int previewWidth = 384;
-        private float zoomFactor = 1f;
-        private ClosableWindow closableWindow;
-        private GameObject uiHolder;
-        private RawImage previewImage;
-        private RenderTexture previewRT;
-        private bool showBackground = true;
-        private bool showTerrain = true;
-        private int lastScreenWidth;
-        private int lastScreenHeight;
+        internal Camera mainCamera;
+        internal Camera previewCamera; // Dedicated camera for preview rendering
+        internal int resolutionWidth = 1980;
+        internal int previewWidth = 384;
+        internal float zoomFactor = 1f;
+        internal ClosableWindow closableWindow;
+        internal GameObject uiHolder;
+        internal RawImage previewImage;
+        internal RenderTexture previewRT;
+        internal bool showBackground = true;
+        internal bool showTerrain = true;
+        internal int lastScreenWidth;
+        internal int lastScreenHeight;
 
         // Background customization UI/state
-        private Window bgWindow;
-        private float bgR = 0f, bgG = 0f, bgB = 0f;  // Background color (0-255 via UI, stored as 0-1 normalized)
-        private bool bgTransparent = true;          // When true, force alpha 0
+        internal Window bgWindow;
+        internal float bgR = 0f, bgG = 0f, bgB = 0f;  // Background color (0-255 via UI, stored as 0-1 normalized)
+        internal bool bgTransparent = true;          // When true, force alpha 0
 
-        private Action windowOpenedAction;
-        private Action windowCollapsedAction;
-        private bool wasMinimized;
+        internal Action windowOpenedAction;
+        internal Action windowCollapsedAction;
+        internal bool wasMinimized;
 
         private void Awake()
-        {   // Initialize camera and default callbacks
+        {   // camera and default callbacks
             if (GameCamerasManager.main != null && GameCamerasManager.main.world_Camera != null)
                 this.mainCamera = GameCamerasManager.main.world_Camera.camera;
 
@@ -69,89 +69,28 @@ namespace ScreenCapture
                     windowCollapsedAction = action ?? (() => { });
 
         public void ShowUI()
-        {   // Create and display the collapsible screenshot UI with preview and controls
-            if (uiHolder != null)
-                return;  // UI already exists
-
-            uiHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSRecorder");
-            closableWindow = CreateClosableWindow(uiHolder.transform, Builder.GetRandomID(), 870, 500, 300, 100, true, true, 1f, "ScreenShot", minimized: false);
-            wasMinimized = closableWindow.Minimized;
-
-            // Root vertical layout to host top and bottom sections
-            closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 25f, new RectOffset(6, 6, 10, 6), false);
-
-            var toolsContainer = Builder.CreateContainer(closableWindow, 0, 0);
-            toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 12f, null, true);
-
-            var ImageContainer = Builder.CreateContainer(toolsContainer, 0, 0);
-            SetupPreview(ImageContainer);
-
-            var Hierarchy  = Builder.CreateBox(toolsContainer, 310, 300, 0, 0, 0.5f);
-            Hierarchy.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 4f, new RectOffset(3, 3, 6, 4), true);
-
-            Builder.CreateLabel(Hierarchy, 200, 30, 0, 0, "Hierarchy");
-
-
-
-            Builder.CreateSeparator(closableWindow, 80, 0, 0);
-            
-            // Bottom row (70x670): Capture button (left) and resolution input (right)
-            var bottom = Builder.CreateContainer(closableWindow, 0, 0);
-            bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
-
-            // Add toggles to control which layers are visible in preview and final capture
-            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showBackground, () => { showBackground = !showBackground; UpdatePreviewCulling(); UpdateBackgroundWindowVisibility(); }, 0, 0, "Show Background");
-            Builder.CreateToggleWithLabel(bottom, 160, 30, () => showTerrain, () => { showTerrain = !showTerrain; UpdatePreviewCulling(); }, 0, 0, "Show Terrain");
-
-            Builder.CreateButton(bottom, 180, 60, 0, 0, TakeScreenshot, "Capture");
-            Builder.CreateTextInput(bottom, 160, 60, 0, 0, resolutionWidth.ToString(), new UnityEngine.Events.UnityAction<string>(OnResolutionInputChange));
-
-            // Apply open behavior immediately if window starts expanded
-            if (!closableWindow.Minimized)
-                windowOpenedAction?.Invoke();
-
-            // Ensure BG window visibility matches initial state
-            UpdateBackgroundWindowVisibility();
+        {   // Delegate UI creation to CaptureUI using options struct
+            var options = new CaptureUIOptions
+            {
+                Owner = this,
+                GetShowBackground = () => showBackground,
+                ToggleBackground = () => showBackground = !showBackground,
+                GetShowTerrain = () => showTerrain,
+                ToggleTerrain = () => showTerrain = !showTerrain,
+                CaptureAction = (Action)TakeScreenshot,
+                ResolutionInputAction = new UnityEngine.Events.UnityAction<string>(OnResolutionInputChange),
+                OnWindowOpened = windowOpenedAction,
+                OnWindowCollapsed = windowCollapsedAction,
+                UpdatePreviewCulling = UpdatePreviewCulling,
+                UpdateBackgroundWindowVisibility = UpdateBackgroundWindowVisibility,
+                SetupPreview = SetupPreview
+            };
+            CaptureUI.ShowUI(options);
         }
 
         public void HideUI()
-        {   // Remove the screenshot UI and clear references
-            // If window is open, treat hide as a collapse to resume time
-            if (closableWindow != null && !closableWindow.Minimized)
-                windowCollapsedAction?.Invoke();
-
-            if (uiHolder != null)
-            {
-                UnityEngine.Object.Destroy(uiHolder);
-                uiHolder = null;
-                closableWindow = null;
-            }
-
-            if (previewRT != null)
-            {
-                previewRT.Release();
-                UnityEngine.Object.Destroy(previewRT);
-                previewRT = null;
-            }
-
-            if (previewCamera != null)
-            {   // Destroy the preview camera to avoid lingering state
-                UnityEngine.Object.Destroy(previewCamera.gameObject);
-                previewCamera = null;
-            }
-
-            if (bgWindow != null)
-            {   // Destroy background settings window
-                UnityEngine.Object.Destroy(bgWindow.gameObject);
-                bgWindow = null;
-            }
-
-            previewImage = null;
-
-            // Clean up any orphaned UI elements
-            GameObject existing = GameObject.Find("SFSRecorder");
-            if (existing != null)
-                UnityEngine.Object.Destroy(existing);
+        {   // Delegate destruction to CaptureUI
+            CaptureUI.HideUI(this);
         }
 
         private void CreatePreviewRenderTexture()
@@ -165,7 +104,7 @@ namespace ScreenCapture
             // Always use exact screen aspect ratio for render texture
             float screenAspect = (float)Screen.width / Screen.height;
             int rtHeight = Mathf.RoundToInt(previewWidth / screenAspect);
-            
+
             previewRT = new RenderTexture(previewWidth, rtHeight, 0, RenderTextureFormat.ARGB32) { antiAliasing = 1, filterMode = FilterMode.Bilinear };
         }
 
@@ -224,13 +163,15 @@ namespace ScreenCapture
                 var content = Builder.CreateContainer(bgWindow, 0, 0);
                 content.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 8f, new RectOffset(8, 8, 260, 8), true);
 
-                Builder.CreateToggleWithLabel(content, 200, 46, () => bgTransparent, () => {
+                Builder.CreateToggleWithLabel(content, 200, 46, () => bgTransparent, () =>
+                {
                     bgTransparent = !bgTransparent;
                     UpdatePreviewCulling();
                 }, 0, 0, "Transparent BG");
 
                 // R input
-                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "R", ((int)bgR).ToString(), val => {
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "R", ((int)bgR).ToString(), val =>
+                {
                     if (int.TryParse(val, out int r))
                     {
                         bgR = Mathf.Clamp(r, 0, 255);
@@ -239,7 +180,8 @@ namespace ScreenCapture
                 });
 
                 // G input
-                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "G", ((int)bgG).ToString(), val => {
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "G", ((int)bgG).ToString(), val =>
+                {
                     if (int.TryParse(val, out int g))
                     {
                         bgG = Mathf.Clamp(g, 0, 255);
@@ -248,7 +190,8 @@ namespace ScreenCapture
                 });
 
                 // B input
-                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "B", ((int)bgB).ToString(), val => {
+                Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "B", ((int)bgB).ToString(), val =>
+                {
                     if (int.TryParse(val, out int b))
                     {
                         bgB = Mathf.Clamp(b, 0, 255);
@@ -267,13 +210,13 @@ namespace ScreenCapture
 
         private int ComputeCullingMask()
         {   // Compute a culling mask for preview/capture; only strip known background layers
-            int mask = mainCamera != null ? mainCamera.cullingMask : ~0;  
+            int mask = mainCamera != null ? mainCamera.cullingMask : ~0;
 
             if (!showBackground)
             {
                 int stars = LayerMask.GetMask("Stars");
                 if (stars != 0)
-                    mask &= ~stars;  
+                    mask &= ~stars;
             }
 
             return mask;
@@ -345,7 +288,7 @@ namespace ScreenCapture
                     continue;
 
                 bool isTerrain = go.GetComponentInParent<SFS.World.StaticWorldObject>() != null ||
-                                 go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;  
+                                 go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;
                 bool isAtmosphere = IsAtmosphereObject(go);
                 bool isStars = string.Equals(layerName, "Stars", StringComparison.OrdinalIgnoreCase) || go.name.IndexOf("star", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -392,11 +335,11 @@ namespace ScreenCapture
             previewGO.transform.SetParent(imageContainer.rectTransform, false);
 
             var rect = previewGO.AddComponent<RectTransform>();
-            
+
             // Calculate preview dimensions using helper method
             var (finalWidth, finalHeight) = CalculatePreviewDimensions();
             rect.sizeDelta = new Vector2(finalWidth, finalHeight);
-            
+
             // Provide explicit layout sizing so the parent vertical layout places the controls below the preview
             var layout = imageContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ??
                          imageContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
@@ -447,14 +390,14 @@ namespace ScreenCapture
             {
                 lastScreenWidth = Screen.width;
                 lastScreenHeight = Screen.height;
-                
+
                 if (previewImage != null)
                 {
                     // Update preview image size using consistent calculation
                     var (finalWidth, finalHeight) = CalculatePreviewDimensions();
                     var rect = previewImage.GetComponent<RectTransform>();
                     rect.sizeDelta = new Vector2(finalWidth, finalHeight);
-                    
+
                     // Recreate render texture with new dimensions
                     CreatePreviewRenderTexture();
                     previewImage.texture = previewRT;
@@ -496,10 +439,10 @@ namespace ScreenCapture
             float containerWidth = 520f;
             float containerHeight = 430f;
             float containerAspect = containerWidth / containerHeight;
-            
+
             // Calculate dimensions that fit within container bounds
             int finalWidth, finalHeight;
-            
+
             if (screenAspect > containerAspect)
             {   // Screen is wider - scale to fit container width
                 finalWidth = Mathf.RoundToInt(containerWidth);
@@ -510,11 +453,11 @@ namespace ScreenCapture
                 finalHeight = Mathf.RoundToInt(containerHeight);
                 finalWidth = Mathf.RoundToInt(containerHeight * screenAspect);
             }
-            
+
             // Ensure dimensions never exceed container bounds
             finalWidth = Mathf.Min(finalWidth, Mathf.RoundToInt(containerWidth));
             finalHeight = Mathf.Min(finalHeight, Mathf.RoundToInt(containerHeight));
-            
+
             return (finalWidth, finalHeight);
         }
 

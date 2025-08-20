@@ -28,6 +28,10 @@ window should show:
 	show estimated file size
 	show int error/vram error when image size is too big
 
+    zoom Slider?
+
 fix ui layout
 
 Makewindow closed by defult
+
+

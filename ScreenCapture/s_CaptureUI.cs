@@ -28,6 +28,18 @@ namespace ScreenCapture
         private static Container previewContainer;
         private static bool previewInitialized;
 
+        // Stats UI elements
+        private static Label resLabel;
+        private static Label gpuLabel;
+        private static Label cpuLabel;
+        private static Label pngLabel;
+        private static Label maxLabel;
+        private static Label warnLabel;
+        private static TextInput resInput;
+
+        private static string FormatMB(long bytes) =>
+            $"{bytes / (1024f * 1024f):0.#} MB";  // Present bytes in MB
+
         public static void ShowUI(Captue owner)
         {   // Build and display UI for the given owner
             if (owner == null)
@@ -48,7 +60,7 @@ namespace ScreenCapture
             owner.closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, new RectOffset(6, 6, 10, 6), true);
 
             Container CreateToolsContainer()
-            {   // Create preview area only; move hierarchy to its own Rockets window
+            {   // Create preview and side toggles
                 var toolsContainer = Builder.CreateContainer(owner.closableWindow, 0, 0);
                 toolsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperCenter, 12f, null, true);
 
@@ -60,12 +72,9 @@ namespace ScreenCapture
                 MakePreviewNonBlocking();
                 previewInitialized = true;
 
-                // BuildRocketsWindow(owner);
-
-                // make controlls pannel next to preview
+                // Controls panel next to preview
                 var controlsContainer = Builder.CreateContainer(toolsContainer, 0, 0);
                 controlsContainer.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
-
 
                 Builder.CreateToggleWithLabel(controlsContainer, 350, 37, () => owner.showBackground, () =>
                 {   // Toggle background visibility and adjust preview
@@ -94,39 +103,35 @@ namespace ScreenCapture
                 return toolsContainer;
             }
 
-            // Container CreateBottomContainer()
-            // {   // Create bottom column with scene toggles
-            //     var bottom = Builder.CreateContainer(owner.closableWindow, 0, 0);
-            //     bottom.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperCenter, 10f, new RectOffset(12, 12, 2, 2), true);
-
-            //     // var col1 = Builder.CreateContainer(bottom, 0, 0);
-            //     // col1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, null, true);
-
-
-
-            //     // Builder.CreateSpace(bottom, 80, (37 * 2 + 20));
-
-            //     var col1 = Builder.CreateContainer(bottom, 0, 0);
-            //     col1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 20f, null, true);
-
-
-
-
-
-            //     return bottom;
-            // }
-
             Container CreateControlsContainer()
-            {   // Create capture controls for actions and resolution
+            {   // Create capture controls and show estimates above them
                 var controls = Builder.CreateContainer(owner.closableWindow, 0, 0);
-                controls.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.LowerLeft, 10f, null, true);
+                controls.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.LowerLeft, 10f, null, true);
 
-                Builder.CreateButton(controls, 180, 58, 0, 0, owner.TakeScreenshot, "Capture");
-                Builder.CreateTextInput(controls, 180, 58, 0, 0, owner.resolutionWidth.ToString(), owner.OnResolutionInputChange);
 
-                Builder.CreateSpace(controls, 250, 58);
 
-                var ZoomRow = Builder.CreateContainer(controls, 0, 0);
+                // Buttons + inputs row
+                var row = Builder.CreateContainer(controls, 0, 0);
+                row.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.LowerLeft, 10f, null, true);
+
+                Builder.CreateButton(row, 180, 58, 0, 0, owner.TakeScreenshot, "Capture");
+                resInput = Builder.CreateTextInput(row, 180, 58, 0, 0, owner.resolutionWidth.ToString(), val =>
+                {
+                    if (int.TryParse(val, out int w))
+                    {
+                        // clamp between 1 and the owner's max safe width
+                        int maxW = owner.GetMaxSafeWidth();
+                        w = Mathf.Clamp(w, 1, maxW);
+                        // update the input display and owner state
+                        resInput.Text = w.ToString();
+                        owner.OnResolutionInputChange(w.ToString());
+                        UpdateEstimatesUI(owner);
+                    }
+                });
+
+                Builder.CreateSpace(row, 250, 58);
+
+                var ZoomRow = Builder.CreateContainer(row, 0, 0);
                 ZoomRow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 5f, null, true);
 
                 Container CreateZoomControls()
@@ -136,7 +141,6 @@ namespace ScreenCapture
 
                     void SetZoom(float z) =>
                         owner.SetPreviewZoom(z);
-
 
                     float StepInLog(float z, int dir)
                     {   // Compute next zoom via log-space lerp across [0.25, 4] using discrete steps
@@ -149,8 +153,6 @@ namespace ScreenCapture
                         return Mathf.Abs(factor - 1f) <= 0.02f ? 1f : factor;
                     }
 
-                    // Builder.CreateSpace(col2Row1, 15, 58);
-
                     InputWithLabel zoomInput = null;
                     zoomInput = Builder.CreateInputWithLabel(ZoomRow, (140 * 2 + 10), 52, 0, 0, "Zoom", $"{GetLevel():0.00}", val =>
                     {   // Parse unbounded zoom level from input
@@ -161,9 +163,9 @@ namespace ScreenCapture
                         {
                             owner.SetPreviewZoomLevelUnclamped(lvl);
                             zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                            UpdateEstimatesUI(owner);
                         }
                     });
-
 
                     var bottomRow = Builder.CreateContainer(ZoomRow, 0, 0);
                     bottomRow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.MiddleLeft, 10f, null, true);
@@ -173,6 +175,7 @@ namespace ScreenCapture
                         float z = StepInLog(GetZoom(), -1);
                         SetZoom(z);
                         zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                        UpdateEstimatesUI(owner);
                     }, "Zoom -");
 
                     Builder.CreateButton(bottomRow, 140, 58, 0, 0, () =>
@@ -180,25 +183,39 @@ namespace ScreenCapture
                         float z = StepInLog(GetZoom(), +1);
                         SetZoom(z);
                         zoomInput.textInput.Text = $"{GetLevel():0.00}";
+                        UpdateEstimatesUI(owner);
                     }, "Zoom +");
+
+
+                                    // Stats row just above the capture button/input
+                var statsRow1 = Builder.CreateContainer(controls, 0, 0);
+                statsRow1.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
+
+                resLabel = Builder.CreateLabel(statsRow1, 210, 34, 0, 0, "Res: -");
+                gpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "GPU: -");
+                cpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "RAM: -");
+
+                var statsRow2 = Builder.CreateContainer(controls, 0, 0);
+                statsRow2.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperLeft, 10f, null, true);
+
+                pngLabel = Builder.CreateLabel(statsRow2, 170, 34, 0, 0, "PNG: -");
+                maxLabel = Builder.CreateLabel(statsRow2, 220, 34, 0, 0, "Max Width: -");
+                warnLabel = Builder.CreateLabel(statsRow2, 400, 34, 0, 0, "");
+                warnLabel.Color = new Color(1f, 0.35f, 0.2f);
 
                     return ZoomRow;
                 }
 
                 CreateZoomControls();
 
+                // Initial stats update after building inputs
+                UpdateEstimatesUI(owner);
+
                 return controls;
             }
 
             CreateToolsContainer();
-
             var separator = Builder.CreateSeparator(owner.closableWindow, 930, 0, 0);
-            // var scale = separator.rectTransform.transform.localScale;
-            // scale.y = 1.2f;
-            // separator.rectTransform.transform.localScale = scale;
-
-
-            // CreateBottomContainer();
             CreateControlsContainer();
 
             // Ensure preview is created when the window opens; pause when collapsed via minimized flag
@@ -207,6 +224,7 @@ namespace ScreenCapture
             {   // Initialize preview the first time the window opens
                 prevOpen?.Invoke();
                 EnsurePreviewSetup(owner);
+                UpdateEstimatesUI(owner);
             };
 
             var prevCollapse = owner.windowCollapsedAction;
@@ -261,6 +279,9 @@ namespace ScreenCapture
                 rocketsWindow = null;
             }
 
+            // Clear stats labels
+            resLabel = null; gpuLabel = null; cpuLabel = null; pngLabel = null; maxLabel = null; warnLabel = null; resInput = null;
+
             owner.previewImage = null;
             previewContainer = null;
             previewInitialized = false;
@@ -271,29 +292,6 @@ namespace ScreenCapture
             GameObject existing = GameObject.Find("SFSRecorder");
             if (existing != null)
                 UnityEngine.Object.Destroy(existing);
-        }
-
-        private static void EnsurePreviewSetup(Captue owner)
-        {   // Lazily initialize the preview when window is opened
-            if (previewInitialized || previewContainer == null || owner == null)
-                return;
-
-            owner.SetupPreview(previewContainer);
-            MakePreviewNonBlocking();
-            previewInitialized = true;
-        }
-
-        private static void MakePreviewNonBlocking()
-        {   // Prevent preview UI from capturing pointer events over other controls
-            if (previewContainer == null)
-                return;
-
-            var go = previewContainer.gameObject;
-            if (go == null)
-                return;
-
-            foreach (var g in go.GetComponentsInChildren<Graphic>(true))
-                g.raycastTarget = false;
         }
 
         public static void UpdateBackgroundWindowVisibility()
@@ -356,6 +354,84 @@ namespace ScreenCapture
                 UnityEngine.Object.Destroy(bgWindow.gameObject);
                 bgWindow = null;
             }
+        }
+
+        private static void EnsurePreviewSetup(Captue owner)
+        {   // Lazily initialize the preview when window is opened
+            if (previewInitialized || previewContainer == null || owner == null)
+                return;
+
+            owner.SetupPreview(previewContainer);
+            MakePreviewNonBlocking();
+            previewInitialized = true;
+        }
+
+        private static void MakePreviewNonBlocking()
+        {   // Prevent preview UI from capturing pointer events over other controls
+            if (previewContainer == null)
+                return;
+
+            var go = previewContainer.gameObject;
+            if (go == null)
+                return;
+
+            foreach (var g in go.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))
+                g.raycastTarget = false;
+        }
+
+        private static void SetResolutionInputColor(Color color)
+        {   // Color the resolution input background and text to reflect feasibility
+            if (resInput == null)
+                return;
+
+            var img = resInput.gameObject.GetComponent<UnityEngine.UI.Image>();
+            if (img != null)
+                img.color = color;
+
+            var text = resInput.gameObject.GetComponentInChildren<UnityEngine.UI.Text>(true);
+            if (text != null)
+                text.color = color;
+        }
+
+        public static void UpdateEstimatesUI(Captue owner)
+        {   // Refresh estimate labels, colors, and warnings based on current settings
+            if (owner == null)
+                return;
+
+            if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null || warnLabel == null)
+                return;
+
+            var (w, h) = owner.GetResolutionFromWidthPublic(owner.resolutionWidth);
+            var (gpuNeed, cpuNeed, rawBytes) = owner.EstimateMemoryForWidthPublic(owner.resolutionWidth);
+            var (gpuBudget, cpuBudget) = owner.GetMemoryBudgetsPublic();
+            int maxSafe = owner.GetMaxSafeWidth();
+
+            float gpuUsage = gpuBudget > 0 ? (float)gpuNeed / gpuBudget : 0f;
+            float cpuUsage = cpuBudget > 0 ? (float)cpuNeed / cpuBudget : 0f;
+
+            resLabel.Text = $"Res: {w}x{h}";
+            gpuLabel.Text = $"GPU: {FormatMB(gpuNeed)}";
+            cpuLabel.Text = $"RAM: {FormatMB(cpuNeed)}";
+            pngLabel.Text = $"PNG: {FormatMB((long)Math.Max(1024, rawBytes * 0.30))}";
+            maxLabel.Text = $"Max Width: {maxSafe}";
+
+            Color ok = Color.white;
+            Color warn = new Color(1f, 0.8f, 0.25f);
+            Color danger = new Color(1f, 0.35f, 0.2f);
+
+            gpuLabel.Color = gpuUsage >= 1f ? danger : (gpuUsage >= 0.8f ? warn : ok);
+            cpuLabel.Color = cpuUsage >= 1f ? danger : (cpuUsage >= 0.8f ? warn : ok);
+            resLabel.Color = (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok);
+
+            // Color the resolution input background/text
+            SetResolutionInputColor((gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok));
+
+            if (gpuUsage >= 1f || cpuUsage >= 1f)
+                warnLabel.Text = "Warning: resolution exceeds available memory. It will be clamped at capture.";
+            else if (gpuUsage >= 0.8f || cpuUsage >= 0.8f)
+                warnLabel.Text = "High memory usage: consider reducing resolution.";
+            else
+                warnLabel.Text = "";
         }
 
         private static void BuildRocketsWindow(Captue owner)

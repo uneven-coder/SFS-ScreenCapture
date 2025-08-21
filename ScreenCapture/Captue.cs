@@ -104,6 +104,27 @@ public class Captue : MonoBehaviour
     private static string FormatMB(long bytes) =>
         $"{bytes / (1024.0 * 1024.0):0.#} MB";  // Format bytes as megabytes
 
+    // Public accessors for UI
+    public (int width, int height) GetResolutionFromWidthPublic(int width)
+    {   // Expose resolution calculation for UI
+        return GetResolutionFromWidth(width);
+    }
+
+    public (long gpuBytes, long cpuBytes, long rawBytes) EstimateMemoryForWidthPublic(int width)
+    {   // Expose memory estimation for UI
+        return EstimateMemoryForWidth(width);
+    }
+
+    public (long gpuBudget, long cpuBudget) GetMemoryBudgetsPublic()
+    {   // Expose memory budgets for UI
+        return GetMemoryBudgets();
+    }
+
+    public int GetMaxSafeWidth()
+    {   // Expose max safe width for UI
+        return ComputeMaxSafeWidth();
+    }
+
     private void Awake()
     {   // Initialize camera and actions when component awakens
         if (GameCamerasManager.main != null && GameCamerasManager.main.world_Camera != null)
@@ -537,6 +558,9 @@ public class Captue : MonoBehaviour
             long approxPng = EstimatePngSizeBytes(rawBytes);
             Debug.Log($"Estimated sizes for {GetResolutionFromWidth(resolutionWidth).width}x{GetResolutionFromWidth(resolutionWidth).height}: Raw {FormatMB(rawBytes)}, GPU {FormatMB(gpuNeed)} (incl. depth), approx PNG {FormatMB(approxPng)}.");
         }
+
+        // Update UI labels if visible
+        CaptureUI.UpdateEstimatesUI(this);
     }
 
     internal void TakeScreenshot()

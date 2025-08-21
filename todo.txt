@@ -20,17 +20,17 @@ window should show:
 ~~	background color option / transparent
 ~~	show planet/ground
 	
-	hide specific rockets
-	hide all button
+~~	hide specific rockets
+~~	hide all button
 
 	capture area
 
 	show estimated file size
 	show int error/vram error when image size is too big
 
-    zoom Slider?
+~~    zoom Slider?
 
-fix ui layout
+~~ fix ui layout
 
 Makewindow closed by defult
 

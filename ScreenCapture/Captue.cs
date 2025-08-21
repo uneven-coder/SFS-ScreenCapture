@@ -43,6 +43,67 @@ public class Captue : MonoBehaviour
     internal Action windowCollapsedAction;
     internal bool wasMinimized;
 
+    internal System.Collections.Generic.HashSet<Rocket> hiddenRockets = new System.Collections.Generic.HashSet<Rocket>();
+    internal bool onlyShowEnabledInHierarchy = false;
+
+    // Memory estimation and safety limits
+    const float SafetyMultiplier = 1.15f; // small overhead margin
+    const int GPU_COLOR_BPP = 4; // ARGB32 color buffer
+    const int GPU_DEPTH_BPP = 4; // 24-bit depth typically occupies 32-bit surface
+    const int CPU_BPP = 4; // Texture2D RGBA32 in RAM
+    const double GPU_BUDGET_FRACTION = 0.4; // use a conservative fraction of reported memory
+    const double CPU_BUDGET_FRACTION = 0.4;
+
+    private (int width, int height) GetResolutionFromWidth(int width)
+    {   // Calculate height from width using current screen aspect
+        width = Mathf.Max(16, width);
+        int height = Mathf.RoundToInt((float)width / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
+        return (width, Mathf.Max(16, height));
+    }
+
+    private (long gpuBytes, long cpuBytes, long rawBytes) EstimateMemoryForWidth(int width)
+    {   // Estimate memory footprints for render/copy paths
+        var (w, h) = GetResolutionFromWidth(width);
+        long pixels = (long)w * h;
+        long gpu = (long)Math.Ceiling(pixels * (GPU_COLOR_BPP + GPU_DEPTH_BPP) * SafetyMultiplier);
+        long cpu = (long)Math.Ceiling(pixels * CPU_BPP * SafetyMultiplier);
+        long raw = pixels * CPU_BPP;
+        return (gpu, cpu, raw);
+    }
+
+    private (long gpuBudget, long cpuBudget) GetMemoryBudgets()
+    {   // Compute conservative memory budgets based on device capabilities
+        long gpu = (long)(SystemInfo.graphicsMemorySize * 1024L * 1024L * GPU_BUDGET_FRACTION);
+        long cpu = (long)(SystemInfo.systemMemorySize * 1024L * 1024L * CPU_BUDGET_FRACTION);
+        return (gpu, cpu);
+    }
+
+    internal int ComputeMaxSafeWidth()
+    {   // Determine maximum safe width constrained by VRAM/RAM and texture limits
+        float aspect = (float)Screen.height / Mathf.Max(1, Screen.width);
+        var (gpuBudget, cpuBudget) = GetMemoryBudgets();
+
+        double perPixelGPU = (GPU_COLOR_BPP + GPU_DEPTH_BPP) * SafetyMultiplier;
+        double perPixelCPU = CPU_BPP * SafetyMultiplier;
+
+        double coef = aspect; // pixels = w^2 * aspect
+        double maxWgpu = Math.Sqrt(gpuBudget / Math.Max(1e-6, (perPixelGPU * coef)));
+        double maxWcpu = Math.Sqrt(cpuBudget / Math.Max(1e-6, (perPixelCPU * coef)));
+
+        int texLimit = SystemInfo.maxTextureSize > 0 ? SystemInfo.maxTextureSize : int.MaxValue;
+        int maxW = Mathf.FloorToInt((float)Math.Min(maxWgpu, maxWcpu));
+        maxW = Mathf.Clamp(maxW, 16, texLimit);
+        return maxW;
+    }
+
+    private static long EstimatePngSizeBytes(long rawBytes)
+    {   // Approximate PNG size assuming moderate compression
+        return (long)Math.Max(1024, rawBytes * 0.30);
+    }
+
+    private static string FormatMB(long bytes) =>
+        $"{bytes / (1024.0 * 1024.0):0.#} MB";  // Format bytes as megabytes
+
     private void Awake()
     {   // Initialize camera and actions when component awakens
         if (GameCamerasManager.main != null && GameCamerasManager.main.world_Camera != null)
@@ -249,6 +310,29 @@ public class Captue : MonoBehaviour
         ApplyBackgroundSettingsToCamera(previewCamera);
     }
 
+    internal bool IsRocketVisible(Rocket rocket) => rocket != null && !hiddenRockets.Contains(rocket);  // Query visibility state for a rocket
+
+    internal void SetRocketVisible(Rocket rocket, bool visible)
+    {   // Toggle a rocket's visibility in preview/screenshot
+        if (rocket == null)
+            return;
+
+        if (visible) hiddenRockets.Remove(rocket); else hiddenRockets.Add(rocket);
+        UpdatePreviewCulling();
+    }
+
+    internal void SetAllRocketsVisible(bool visible)
+    {   // Set all rockets visible or hidden at once
+        hiddenRockets.Clear();
+        if (!visible)
+        {
+            var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
+            foreach (var r in rockets)
+                hiddenRockets.Add(r);
+        }
+        UpdatePreviewCulling();
+    }
+
     private System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> ApplySceneVisibilityTemporary()
     {   // Temporarily modify scene visibility based on current settings
         var changed = new System.Collections.Generic.List<(Renderer, bool)>();
@@ -265,21 +349,21 @@ public class Captue : MonoBehaviour
             var go = r.gameObject;
             string layerName = LayerMask.LayerToName(go.layer) ?? string.Empty;
 
-            if (string.Equals(layerName, "Parts", StringComparison.OrdinalIgnoreCase))
-                continue;
+            // Removed Parts-layer skip so rocket parts can be hidden per selection
 
             bool isTerrain = go.GetComponentInParent<SFS.World.StaticWorldObject>() != null ||
                              go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;
             bool isAtmosphere = CaptureUtilities.IsAtmosphereObject(go);
             bool isStars = string.Equals(layerName, "Stars", StringComparison.OrdinalIgnoreCase) || go.name.IndexOf("star", StringComparison.OrdinalIgnoreCase) >= 0;
 
+            var parentRocket = go.GetComponentInParent<Rocket>();
+            bool isRocketHidden = parentRocket != null && hiddenRockets.Contains(parentRocket);
+
             bool shouldDisable = false;
 
-            if (!showBackground && (isStars || isAtmosphere))
-                shouldDisable = true;
-
-            if (!showTerrain && isTerrain)
-                shouldDisable = true;
+            if (!showBackground && (isStars || isAtmosphere)) shouldDisable = true;
+            if (!showTerrain && isTerrain) shouldDisable = true;
+            if (isRocketHidden) shouldDisable = true;
 
             if (shouldDisable && r.enabled)
             {
@@ -429,8 +513,31 @@ public class Captue : MonoBehaviour
         return (finalWidth, finalHeight);
     }
 
-    internal void OnResolutionInputChange(string newValue) =>
-        resolutionWidth = int.TryParse(newValue, out int num) ? num : resolutionWidth;
+    internal void OnResolutionInputChange(string newValue)
+    {   // Update target width, estimate memory/file sizes, and clamp to a safe maximum if needed
+        if (!int.TryParse(newValue, out int num))
+            return;
+
+        resolutionWidth = Mathf.Max(16, num);
+
+        var (gpuNeed, cpuNeed, rawBytes) = EstimateMemoryForWidth(resolutionWidth);
+        var (gpuBudget, cpuBudget) = GetMemoryBudgets();
+
+        if (gpuNeed > gpuBudget || cpuNeed > cpuBudget)
+        {   // Requested resolution is too large; trim and inform
+            int maxSafe = ComputeMaxSafeWidth();
+            var (ow, oh) = GetResolutionFromWidth(resolutionWidth);
+            resolutionWidth = Mathf.Min(resolutionWidth, maxSafe);
+            var (nw, nh) = GetResolutionFromWidth(resolutionWidth);
+
+            Debug.LogWarning($"Requested {ow}x{oh} exceeds safe memory budgets. Max safe width on this device is ~{maxSafe} ({nw}x{nh}). GPU budget {FormatMB(gpuBudget)}, CPU budget {FormatMB(cpuBudget)}; needed GPU {FormatMB(gpuNeed)}, CPU {FormatMB(cpuNeed)}.");
+        }
+        else
+        {   // Provide a quick estimate for awareness
+            long approxPng = EstimatePngSizeBytes(rawBytes);
+            Debug.Log($"Estimated sizes for {GetResolutionFromWidth(resolutionWidth).width}x{GetResolutionFromWidth(resolutionWidth).height}: Raw {FormatMB(rawBytes)}, GPU {FormatMB(gpuNeed)} (incl. depth), approx PNG {FormatMB(approxPng)}.");
+        }
+    }
 
     internal void TakeScreenshot()
     {   // Capture and save a screenshot at the specified resolution
@@ -446,6 +553,14 @@ public class Captue : MonoBehaviour
         }
 
         int width = this.resolutionWidth;
+        int maxSafe = ComputeMaxSafeWidth();
+        if (width > maxSafe)
+        {   // Prevent attempting an unsafe resolution
+            var (ow, oh) = GetResolutionFromWidth(width);
+            width = maxSafe;
+            var (sw, sh) = GetResolutionFromWidth(width);
+            Debug.LogWarning($"Requested {ow}x{oh} exceeds safe memory budgets. Using {sw}x{sh} as the maximum available on this device.");
+        }
         int height = Mathf.RoundToInt((float)width / (float)Screen.width * (float)Screen.height);
 
         RenderTexture renderTexture = null;
@@ -529,6 +644,10 @@ public class Captue : MonoBehaviour
 
             using (var ms = new MemoryStream(pngBytes))
                 InsertIo(fileName, ms, worldFolder);
+
+            // Log final sizes for user feedback
+            var (gpuNeed, cpuNeed, rawBytes) = EstimateMemoryForWidth(width);
+            Debug.Log($"Saved {width}x{height}. Approx memory: GPU {FormatMB(gpuNeed)} (incl. depth), CPU {FormatMB(cpuNeed)}; file size {FormatMB(pngBytes.LongLength)} (est PNG {FormatMB(EstimatePngSizeBytes(rawBytes))}).");
         }
 
         catch (System.Exception ex)

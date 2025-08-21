@@ -468,7 +468,7 @@ namespace ScreenCapture
 
                 foreach (var rocket in rockets)
                 {
-                    string label = string.IsNullOrWhiteSpace(rocket.rocketName) ? rocket.name : rocket.rocketName;
+                    string label = !string.IsNullOrWhiteSpace(rocket.mapPlayer.Select_DisplayName) ? rocket.mapPlayer.Select_DisplayName : rocket.name;
 
                     var toggle = Builder.CreateToggleWithLabel(listContent, 400, 34, () => owner.IsRocketVisible(rocket), () =>
                     {   // Toggle per-rocket visibility

@@ -3,6 +3,7 @@ using SFS.World;
 using UnityEngine;
 using UnityEngine.UI;
 using SFS.UI.ModGUI;
+using static ScreenCapture.Main;
 
 namespace ScreenCapture
 {
@@ -11,40 +12,43 @@ namespace ScreenCapture
         private Captue ownerRef;
         private Container listContent;
 
-        public override void Show(Captue owner)
-        {   // Create the rockets window anchored next to main window
-            if (owner == null || owner.closableWindow == null || IsOpen)
+        public override void Show()
+        {   // Show the rockets window at default position
+            if (World.OwnerInstance.closableWindow == null)
                 return;
-
-            ownerRef = owner;
+            
+            if (IsOpen)
+                return;
             
             window = CreateStandardWindow(
-                owner.uiHolder.transform, 
+                World.UIHolder.transform, 
                 "Rocket Hierarchy",
-                480, 600, 
-                (int)(owner.closableWindow.Position.x + owner.closableWindow.Size.x + 10), 
-                (int)owner.closableWindow.Position.y
+                480, 600, (int)(World.OwnerInstance.closableWindow.rectTransform.position.x + 10), (int)World.OwnerInstance.closableWindow.rectTransform.position.y
             );
             
             window.EnableScrolling(SFS.UI.ModGUI.Type.Vertical);
             
-            var header = CreateStandardContainer(window, 8f);
+            // Create header with buttons using delegate-based container
+            CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, header => {
+                // Add refresh button
+                Builder.CreateButton(header, 400, 46, 0, 0, () => {
+                    // Refresh the rocket hierarchy list
+                    RefreshRocketList();
+                }, "Refresh");
 
-            listContent = CreateStandardContainer(window, 18f);
-            SetupScrollableContent(listContent);
+                // Add toggle all button
+                Builder.CreateButton(header, 400, 46, 0, 0, () => {
+                    // Toggle all rockets on/off
+                    var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
+                    bool anyVisible = rockets.Any(r => CaptureUtilities.IsRocketVisible(r)); 
+                    CaptureUtilities.SetAllRocketsVisible(!anyVisible);
+                    RefreshRocketList();
+                }, "Toggle All");
+            });
 
-            Builder.CreateButton(header, 400, 46, 0, 0, () =>
-            {   // Refresh the rocket hierarchy list
-                RefreshRocketList();
-            }, "Refresh");
-
-            Builder.CreateButton(header, 400, 46, 0, 0, () =>
-            {   // Toggle all rockets on/off
-                var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
-                bool anyVisible = rockets.Any(r => ownerRef.IsRocketVisible(r)); 
-                ownerRef.SetAllRocketsVisible(!anyVisible);
-                RefreshRocketList();
-            }, "Toggle All");
+            // Create scrollable list container
+            listContent = CreateVerticalContainer(window, 18f);
+            // SetupScrollableContent(listContent);
 
             RefreshRocketList();
         }
@@ -67,11 +71,11 @@ namespace ScreenCapture
                                rocket.mapPlayer.Select_DisplayName : rocket.name;
 
                 var toggle = Builder.CreateToggleWithLabel(listContent, 400, 34, 
-                    () => ownerRef.IsRocketVisible(rocket), 
+                    () => CaptureUtilities.IsRocketVisible(rocket), 
                     () =>
                     {   // Toggle per-rocket visibility
-                        bool cur = ownerRef.IsRocketVisible(rocket); 
-                        ownerRef.SetRocketVisible(rocket, !cur);
+                        bool cur = CaptureUtilities.IsRocketVisible(rocket); 
+                        CaptureUtilities.SetRocketVisible(rocket, !cur);
                     }, 
                     0, 0, label);
 

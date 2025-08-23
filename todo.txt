@@ -32,6 +32,8 @@ window should show:
 
 ~~ fix ui layout
 
+    add 4 inputs to change capture size to capture specific area
+
 Makewindow closed by defult
 
 

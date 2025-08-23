@@ -1,5 +1,7 @@
 using SFS.UI.ModGUI;
+using SFS.Utilities;
 using UnityEngine;
+using static ScreenCapture.Main;
 
 namespace ScreenCapture
 {
@@ -10,64 +12,64 @@ namespace ScreenCapture
         
         private Captue ownerRef;
         
-        public override void Show(Captue owner)
-        {   // Show the background settings window next to the main window
-            if (owner == null || owner.closableWindow == null)
+        public override void Show()
+        {   // Show the background settings window at default position
+            if (World.OwnerInstance.closableWindow == null)
                 return;
-                
-            ownerRef = owner;
             
             if (IsOpen)
                 return;
                 
             window = CreateStandardWindow(
-                owner.uiHolder.transform, 
+                World.UIHolder.transform, 
                 "Background",
-                280, 320, 
-                (int)(owner.closableWindow.Position.x + 700), 
-                (int)owner.closableWindow.Position.y
+                280, 320, (int)(World.OwnerInstance.closableWindow.rectTransform.position.x + 2), (int)World.OwnerInstance.closableWindow.rectTransform.position.y -6
             );
             
-            var content = CreateStandardContainer(window, 8f);
-            
-            Builder.CreateToggleWithLabel(content, 200, 46, () => Transparent, () =>
-            {   // Toggle transparency and refresh preview bg
-                Transparent = !Transparent;
-                if (ownerRef?.previewCamera != null)
-                    CaptureUtilities.ApplyBackgroundSettingsToCamera(ownerRef, ownerRef.previewCamera);
-            }, 0, 0, "Transparent BG");
-
-            Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "R", ((int)R).ToString(), val =>
-            {
-                if (int.TryParse(val, out int r))
+            // Create content using the delegate approach for cleaner organization
+            CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, container => {
+                // Toggle for transparency
+                Builder.CreateToggleWithLabel(container, 200, 46, () => Transparent, () =>
+                {   // Toggle transparency and refresh preview bg
+                    Transparent = !Transparent;
+                    if (World.PreviewCamera != null)
+                        CaptureUtilities.UpdatePreviewCulling();
+                }, 0, 0, "Transparent BG");
+                
+                // RGB color inputs
+                Builder.CreateInputWithLabel(container, 200, 40, 0, 0, "R", ((int)R).ToString(), val =>
                 {
-                    R = Mathf.Clamp(r, 0, 255);
-                    if (ownerRef?.previewCamera != null)
-                        CaptureUtilities.ApplyBackgroundSettingsToCamera(ownerRef, ownerRef.previewCamera);
-                }
-            });
+                    if (int.TryParse(val, out int r))
+                    {
+                        R = Mathf.Clamp(r, 0, 255);
+                        if (World.PreviewCamera != null)
+                            CaptureUtilities.UpdatePreviewCulling();
+                    }
+                });
 
-            Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "G", ((int)G).ToString(), val =>
-            {
-                if (int.TryParse(val, out int g))
+                Builder.CreateInputWithLabel(container, 200, 40, 0, 0, "G", ((int)G).ToString(), val =>
                 {
-                    G = Mathf.Clamp(g, 0, 255);
-                    if (ownerRef?.previewCamera != null)
-                        CaptureUtilities.ApplyBackgroundSettingsToCamera(ownerRef, ownerRef.previewCamera);
-                }
-            });
+                    if (int.TryParse(val, out int g))
+                    {
+                        G = Mathf.Clamp(g, 0, 255);
+                        if (World.PreviewCamera != null)
+                            CaptureUtilities.UpdatePreviewCulling();
+                    }
+                });
 
-            Builder.CreateInputWithLabel(content, 200, 40, 0, 0, "B", ((int)B).ToString(), val =>
-            {
-                if (int.TryParse(val, out int b))
+                Builder.CreateInputWithLabel(container, 200, 40, 0, 0, "B", ((int)B).ToString(), val =>
                 {
-                    B = Mathf.Clamp(b, 0, 255);
-                    if (ownerRef?.previewCamera != null)
-                        CaptureUtilities.ApplyBackgroundSettingsToCamera(ownerRef, ownerRef.previewCamera);
-                }
+                    if (int.TryParse(val, out int b))
+                    {
+                        B = Mathf.Clamp(b, 0, 255);
+                        if (World.PreviewCamera != null)
+                            CaptureUtilities.UpdatePreviewCulling();
+                    }
+                });
+                
+                // Help label
+                Builder.CreateLabel(container, 200, 35, 0, 0, "RGB out of 255");
             });
-
-            Builder.CreateLabel(content, 200, 35, 0, 0, "RGB out of 255");
         }
 
         public override void Hide()
@@ -87,7 +89,7 @@ namespace ScreenCapture
                 return;
                 
             Hide();
-            Show(ownerRef);
+            Show();
         }
 
         public static Color GetBackgroundColor() =>

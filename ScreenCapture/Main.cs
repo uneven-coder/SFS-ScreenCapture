@@ -7,13 +7,26 @@ using UnityEngine;
 using UnityEngine.UI;
 using SFS.UI.ModGUI;
 using UITools;
+using static ScreenCapture.Main;
 
 namespace ScreenCapture
 {
     public class Main : Mod
-    {
+    {   // Primary static settings for capture
+        public static int PreviewWidth { get; set; } = 384;
+
         public static FolderPath ScreenCaptureFolder { get; private set; }
         private static Captue s_captureInstance;
+
+        public static int ResolutionWidth { get; set; } = 1980;
+        public static float PreviewZoom { get; set; } = 1f;
+        public static float PreviewZoomLevel { get; set; } = 0f;
+        public static float PreviewBasePivotDistance { get; set; } = 100f;
+
+
+        public static int LastScreenWidth { get; set; }
+        public static int LastScreenHeight { get; set; }
+        public static System.Collections.Generic.HashSet<Rocket> HiddenRockets { get; } = new System.Collections.Generic.HashSet<Rocket>();
 
         public override string ModNameID => "ScreenCapture";
         public override string DisplayName => "ScreenCapture";
@@ -24,7 +37,6 @@ namespace ScreenCapture
 
         public override void Load()
         {   // Initialize mod components and register scene-specific event handlers
-            base.Load();
 
             ScreenCaptureFolder = FileUtilities.InsertIo("ScreenCaptures", FileUtilities.savingFolder);
 
@@ -40,8 +52,6 @@ namespace ScreenCapture
             }
         }
 
-        public override void Early_Load() => base.Early_Load();
-
         private void CreateScreenCaptureUI()
         {   // Display the capture UI when entering the world scene
             if (s_captureInstance != null)
@@ -53,66 +63,65 @@ namespace ScreenCapture
             if (s_captureInstance != null)
                 s_captureInstance.HideUI();
         }
+
+        // Static version of Captue for world context
+        public static class World
+        {   // Static version of Captue for world capture context
+
+            public static GameObject UIHolder;
+            public static Camera MainCamera;
+            public static Camera PreviewCamera;
+            public static bool wasMinimized;
+            public static ref Captue OwnerInstance => ref s_captureInstance;
+
+            static World()
+            {   // Initialize static world capture settings
+                MainCamera = GameCamerasManager.main?.world_Camera?.camera;
+                // UIHolder = Main.uiHolder;
+                wasMinimized = false;
+            }
+
+            public static void Awake()
+            {   // Reset static state on awakening
+                MainCamera = GameCamerasManager.main?.world_Camera?.camera;
+                // UIHolder = Main.uiHolder;
+                wasMinimized = false;
+            }
+        }
     }
-    
+
     public class Captue : MonoBehaviour
-    {   // Main capture component that manages screenshot functionality
-        internal Camera mainCamera;
-        internal Camera previewCamera;
-        
-        // Resolution settings
-        internal int resolutionWidth = 1980;
-        internal int previewWidth = 384;
-        
-        // Camera zoom settings
-        internal float previewZoom = 1f;
-        internal float previewZoomLevel = 0f;
-        internal float previewBasePivotDistance = 100f;
-        
+    {
         // UI components
         internal ClosableWindow closableWindow;
-        internal GameObject uiHolder;
-        public RawImage previewImage;
-        public RenderTexture previewRT;
-        
+
+        public static RawImage PreviewImage { get; set; }
+        public static RenderTexture PreviewRT { get; set; }
+
         // Visibility flags
-        internal bool showBackground = true;
-        internal bool showTerrain = true;
-        
-        // Screen state tracking
-        internal int lastScreenWidth;
-        internal int lastScreenHeight;
-        
+        public bool showBackground = true;
+        public bool showTerrain = true;
+
         // Window state management
         internal Action windowOpenedAction;
         internal Action windowCollapsedAction;
-        internal bool wasMinimized;
-        
+
         // UI windows
         internal BackgroundUI backgroundWindow;
         internal RocketsUI rocketsWindow;
         internal MainUI mainWindow; // Use instance UI instead of static helpers
-        
-        internal System.Collections.Generic.HashSet<Rocket> hiddenRockets = new System.Collections.Generic.HashSet<Rocket>();
-        internal bool onlyShowEnabledInHierarchy = false;
 
         void Awake()
         {   // Initialize camera and actions when component awakens
-            mainCamera = GameCamerasManager.main?.world_Camera?.camera;
+            Main.World.Awake();
 
             windowOpenedAction = () =>
-            {
-                if (WorldTime.main != null)
-                    WorldTime.main.SetState(0.0, true, false);
-            };
+                    WorldTime.main?.SetState(0.0, true, false);
 
             windowCollapsedAction = () =>
-            {
-                if (WorldTime.main != null)
-                    WorldTime.main.SetState(1.0, true, false);
-            };
-        }        
-        
+                    WorldTime.main?.SetState(1.0, true, false);
+        }
+
         public void OnWindowOpened(Action action) =>
             windowOpenedAction = action ?? (() => { });
 
@@ -124,7 +133,8 @@ namespace ScreenCapture
             if (mainWindow != null)
                 return;
             mainWindow = new MainUI();
-            mainWindow.Show(this);
+            mainWindow.Show();
+            // World.UIHolder = closableWindow?.gameObject;
         }
 
         public void HideUI()
@@ -136,97 +146,77 @@ namespace ScreenCapture
         }
 
         private void Update()
-        {   // Handle window minimization and update the preview
-            if(mainCamera == null)
-                mainCamera = GameCamerasManager.main?.world_Camera?.camera;
-            
+        {   // Handle window minimization and update the preview from MonoBehaviour
+            if (World.MainCamera == null)
+                World.MainCamera = GameCamerasManager.main?.world_Camera?.camera;
+
             if (closableWindow == null)
                 return;
-            
+
             bool minimized = closableWindow.Minimized;
+            ref bool wasMinimized = ref Main.World.wasMinimized;
             if (minimized != wasMinimized)
-            {   // Execute appropriate actions based on window state
-                if (minimized)
-                    windowCollapsedAction?.Invoke();  // Pause time when minimized
-                else
-                    windowOpenedAction?.Invoke();  // Resume time when opened
-                    
+            {   // Handle window state change
+                (minimized ? windowCollapsedAction : windowOpenedAction)?.Invoke();
                 wasMinimized = minimized;
+                Main.World.wasMinimized = wasMinimized;
                 mainWindow?.UpdateBackgroundWindowVisibility();
             }
-            
-            if(!minimized && previewImage != null && mainCamera != null)
-            {   // Update preview: recreate texture when screen changes or missing texture
-                if (Screen.width != lastScreenWidth || Screen.height != lastScreenHeight || previewRT == null || !previewRT.IsCreated())
-                {   // Update preview dimensions and render texture
-                    lastScreenWidth = Screen.width; lastScreenHeight = Screen.height;
-                    var rect = previewImage.GetComponent<RectTransform>();
-                    var (finalWidth, finalHeight) = CaptureUtilities.CalculatePreviewDimensions(this);
+
+            // Only update preview when window is open and components are available
+            if (minimized || PreviewImage == null || World.MainCamera == null || World.PreviewCamera == null)
+                return;
+
+            UpdatePreviewRendering();
+        }
+
+        private void UpdatePreviewRendering()
+        {   // Handle preview rendering and screen size changes
+            bool screenSizeChanged = Screen.width != LastScreenWidth || Screen.height != LastScreenHeight;
+            bool rtNeedsRecreation = PreviewRT == null || !PreviewRT.IsCreated();
+
+            if (screenSizeChanged || rtNeedsRecreation)
+            {   // Recreate render texture when screen size changes
+                LastScreenWidth = Screen.width;
+                LastScreenHeight = Screen.height;
+
+                if (PreviewRT != null)
+                {
+                    PreviewRT.Release();
+                    UnityEngine.Object.Destroy(PreviewRT);
+                }
+
+                PreviewRT = CaptureUtilities.CreatePreviewRenderTexture(PreviewWidth);
+                if (PreviewImage != null)
+                {
+                    PreviewImage.texture = PreviewRT;
+                    var rect = PreviewImage.GetComponent<RectTransform>();
+                    var (finalWidth, finalHeight) = CaptureUtilities.CalculatePreviewDimensions();
                     rect.sizeDelta = new Vector2(finalWidth, finalHeight);
-                    CaptureUtilities.CreatePreviewRenderTexture(this);
-                    previewImage.texture = previewRT;
                 }
-                if (previewCamera != null)
-                {   // Render preview image using updated camera settings
-                    previewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(this);
-                    CaptureUtilities.ApplyBackgroundSettingsToCamera(this, previewCamera);
-                    CaptureUtilities.ApplyPreviewZoom(this);
-                    var modified = CaptureUtilities.ApplySceneVisibilityTemporary(this);
-                    var prevTarget = previewCamera.targetTexture;
-                    previewCamera.targetTexture = previewRT;
-                    previewCamera.Render();
-                    previewCamera.targetTexture = prevTarget;
-                    CaptureUtilities.RestoreSceneVisibility(modified);
-                }
+
+                // Update preview camera target
+                if (World.PreviewCamera != null)
+                    World.PreviewCamera.targetTexture = PreviewRT;
             }
-        }
 
-        internal void OnResolutionInputChange(string newValue) => 
-            CaptureUtilities.OnResolutionInputChange(this, newValue);
+            // Render preview frame
+            if (World.PreviewCamera != null && PreviewRT != null)
+            {   // Configure and render preview
+                World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(showBackground);
+                World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
+                World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
+                CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
 
-        internal void TakeScreenshot() => 
-            CaptureUtilities.TakeScreenshot(this);
-            
-        internal bool IsRocketVisible(Rocket rocket) => 
-            rocket != null && !hiddenRockets.Contains(rocket);
+                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(showBackground, showTerrain, HiddenRockets);
+                var prevTarget = World.PreviewCamera.targetTexture;
 
-        internal void SetRocketVisible(Rocket rocket, bool visible)
-        {   // Toggle a rocket's visibility in preview/screenshot
-            if (rocket == null)
-                return;
-            if (visible) hiddenRockets.Remove(rocket); else hiddenRockets.Add(rocket);
-            UpdatePreviewCulling();
-        }
+                World.PreviewCamera.targetTexture = PreviewRT;
+                World.PreviewCamera.Render();
+                World.PreviewCamera.targetTexture = prevTarget;
 
-        internal void SetAllRocketsVisible(bool visible)
-        {   // Set all rockets visible or hidden at once
-            hiddenRockets.Clear();
-            if (!visible)
-            {   
-                var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
-                foreach (var r in rockets) hiddenRockets.Add(r);
+                CaptureUtilities.RestoreSceneVisibility(modified);
             }
-            UpdatePreviewCulling();
-        }
-        
-        internal void SetPreviewZoom(float factor) => 
-            CaptureUtilities.SetPreviewZoom(this, factor);
-
-        internal void SetPreviewZoomLevelUnclamped(float level) => 
-            CaptureUtilities.SetPreviewZoomLevelUnclamped(this, level);
-            
-        public void UpdatePreviewCulling()
-        {   // Update the preview camera's culling and background settings
-            if (previewCamera == null)
-                return;
-            previewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(this);
-            CaptureUtilities.ApplyBackgroundSettingsToCamera(this, previewCamera);
-        }
-
-        internal void SetupPreview(Container imageContainer) 
-        {   // Initialize preview rendering with the provided container
-            CaptureUtilities.SetupPreview(this, imageContainer);
         }
     }
-
 }

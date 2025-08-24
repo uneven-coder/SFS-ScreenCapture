@@ -23,7 +23,9 @@ namespace ScreenCapture
             window = CreateStandardWindow(
                 World.UIHolder.transform, 
                 "Background",
-                280, 320, (int)(World.OwnerInstance.closableWindow.rectTransform.position.x + 2), (int)World.OwnerInstance.closableWindow.rectTransform.position.y -6
+                280, 320,
+                (int)(World.OwnerInstance.closableWindow.Position.x + 650), 
+                (int)World.OwnerInstance.closableWindow.Position.y
             );
             
             // Create content using the delegate approach for cleaner organization

@@ -19,17 +19,21 @@ namespace ScreenCapture
             
             if (IsOpen)
                 return;
+
+            SFS.World.PlayerController.main.player.OnChange += DelayedRefreshCallback;
             
             window = CreateStandardWindow(
                 World.UIHolder.transform, 
                 "Rocket Hierarchy",
-                480, 600, (int)(World.OwnerInstance.closableWindow.rectTransform.position.x + 10), (int)World.OwnerInstance.closableWindow.rectTransform.position.y
+                480, 600,
+                (int)(World.OwnerInstance.closableWindow.Position.x + 750), 
+                (int)World.OwnerInstance.closableWindow.Position.y - 360
             );
             
             window.EnableScrolling(SFS.UI.ModGUI.Type.Vertical);
             
             // Create header with buttons using delegate-based container
-            CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, header => {
+                CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, header => {
                 // Add refresh button
                 Builder.CreateButton(header, 400, 46, 0, 0, () => {
                     // Refresh the rocket hierarchy list
@@ -38,15 +42,21 @@ namespace ScreenCapture
 
                 // Add toggle all button
                 Builder.CreateButton(header, 400, 46, 0, 0, () => {
-                    // Toggle all rockets on/off
+                    // Toggle all rockets on/off efficiently without LINQ
                     var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
-                    bool anyVisible = rockets.Any(r => CaptureUtilities.IsRocketVisible(r)); 
+                    bool anyVisible = false;
+                    foreach (var r in rockets)
+                    {
+                        if (CaptureUtilities.IsRocketVisible(r))
+                        {
+                            anyVisible = true;
+                            break;
+                        }
+                    }
                     CaptureUtilities.SetAllRocketsVisible(!anyVisible);
                     RefreshRocketList();
                 }, "Toggle All");
-            });
-
-            // Create scrollable list container
+            });            // Create scrollable list container
             listContent = CreateVerticalContainer(window, 18f);
             // SetupScrollableContent(listContent);
 
@@ -61,14 +71,16 @@ namespace ScreenCapture
             foreach (Transform child in listContent.gameObject.transform)
                 UnityEngine.Object.Destroy(child.gameObject);
 
-            var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true)
-                           .OrderBy(r => r.rocketName ?? r.name)
-                           .ToArray();
+            var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
+            var sortedRockets = new Rocket[rockets.Length];
+            System.Array.Copy(rockets, sortedRockets, rockets.Length);
+            System.Array.Sort(sortedRockets, (a, b) => string.Compare(a.rocketName ?? a.name, b.rocketName ?? b.name, System.StringComparison.Ordinal));
 
-            foreach (var rocket in rockets)
+            foreach (var rocket in sortedRockets)
             {
-                string label = !string.IsNullOrWhiteSpace(rocket.mapPlayer.Select_DisplayName) ? 
+                string rocketName = !string.IsNullOrWhiteSpace(rocket.mapPlayer.Select_DisplayName) ? 
                                rocket.mapPlayer.Select_DisplayName : rocket.name;
+                string label = $"{(rocket.isPlayer ? "> " : "  ")}{rocketName}";
 
                 var toggle = Builder.CreateToggleWithLabel(listContent, 400, 34, 
                     () => CaptureUtilities.IsRocketVisible(rocket), 
@@ -88,6 +100,18 @@ namespace ScreenCapture
             ForceRebuildLayout(listContent.rectTransform);
         }
 
+        private void DelayedRefreshCallback()
+        {   // Callback for player change events with delay
+            if (window != null)
+                World.OwnerInstance.StartCoroutine(DelayedRefresh());
+        }
+
+        private System.Collections.IEnumerator DelayedRefresh()
+        {   // Wait for rocket data to update before refreshing
+            yield return new WaitForSeconds(0.1f);
+            RefreshRocketList();
+        }
+
         public override void Hide()
         {   // Close the rockets window if open
             if (window != null)
@@ -95,6 +119,8 @@ namespace ScreenCapture
                 UnityEngine.Object.Destroy(window.gameObject);
                 window = null;
             }
+
+            SFS.World.PlayerController.main.player.OnChange -= DelayedRefreshCallback;
             
             ownerRef = null;
             listContent = null;
@@ -106,6 +132,9 @@ namespace ScreenCapture
                 return;
                 
             RefreshRocketList();
+                
+            Hide();
+            Show();
         }
     }
 }

@@ -6,6 +6,7 @@ using SFS.UI.ModGUI;
 using SFS.World;
 using SFS.UI;
 using UnityEngine;
+using UnityEngine.UI;
 using System.Linq;
 using System.IO;
 using static UITools.UIToolsBuilder;
@@ -13,6 +14,8 @@ using SystemType = System.Type;
 using static ScreenCapture.Main;
 using System.Runtime.InteropServices;
 using SFS.Builds;
+using TranslucentImage;
+using System.Diagnostics;
 
 namespace ScreenCapture
 {
@@ -22,6 +25,7 @@ namespace ScreenCapture
     {   // Manage the main capture UI bound directly to a Captue instance
         private Container previewContainer;
         private bool previewInitialized;
+        private Coroutine currentAnimation;
 
         // Stats UI elements
         private Label resLabel;
@@ -29,9 +33,39 @@ namespace ScreenCapture
         private Label cpuLabel;
         private Label pngLabel;
         private Label maxLabel;
-        private Label warnLabel;
         private TextInput resInput;
 
+        // Performance optimization: cache frequently accessed values
+        private int lastEstimateWidth = -1;
+        private float lastUpdateTime;
+        private const float UPDATE_INTERVAL = 0.1f; // Update UI estimates every 100ms max
+
+
+        private void OnResolutionInputChange(string val)
+        {   // Optimized resolution input validation with crop factor consideration
+            if (!int.TryParse(val, out int targetWidth))
+                return;
+
+            float leftCrop = CropLeft / 100f;
+            float rightCrop = CropRight / 100f;
+            float totalHorizontal = leftCrop + rightCrop;
+
+            if (totalHorizontal >= 1f)
+            {
+                float scale = 0.99f / totalHorizontal;
+                leftCrop *= scale;
+                rightCrop *= scale;
+            }
+
+            float cropWidthFactor = 1f - leftCrop - rightCrop;
+            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
+            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
+
+            targetWidth = Mathf.Clamp(targetWidth, 1, maxSafeTargetWidth);
+            resInput.Text = targetWidth.ToString();
+            ResolutionWidth = targetWidth;
+            UpdateEstimatesUI();
+        }
 
         public override void Show()
         {   // Build and display main window UI for the given owner
@@ -40,6 +74,9 @@ namespace ScreenCapture
 
             previewInitialized = false;
             previewContainer = null;
+
+            // Subscribe to screen size changes
+            Captue.OnScreenSizeChanged += OnScreenSizeChanged;
 
             World.UIHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSRecorder");
             var closableWindow = CreateClosableWindow(World.UIHolder.transform, Builder.GetRandomID(), 950, 545, 300, 100, true, true, 1f, "ScreenShot", minimized: false);
@@ -93,8 +130,15 @@ namespace ScreenCapture
         {   // Create preview and side toggles
             return CreateContainer(window, SFS.UI.ModGUI.Type.Horizontal, TextAnchor.UpperCenter, 12f, null, true, toolsContainer =>
             {
-                // Create preview container 
-                previewContainer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 4f, new RectOffset(6, 6, 6, 6), true);
+                // Create preview container with fixed width and dynamic height
+                previewContainer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, new RectOffset(6, 6, 6, 6), true);
+
+                // Reserve fixed width for preview container so layout doesn't shift when preview resizes
+                var previewLE = previewContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? previewContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+                previewLE.preferredWidth = 520f;
+                previewLE.minWidth = 520f;
+                previewLE.flexibleWidth = 0f;
+                previewLE.preferredHeight = -1f; // Let height adjust to content
 
                 // Setup preview immediately
                 try
@@ -110,8 +154,20 @@ namespace ScreenCapture
                     previewInitialized = false;
                 }
 
+                // Flexible spacer to push the controls panel to the right edge regardless of preview size
+                var spacer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, null, false);
+                var spacerLE = spacer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? spacer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+                spacerLE.flexibleWidth = 1f;
+                spacerLE.minWidth = 0f;
+                spacerLE.preferredWidth = 0f;
+
                 CreateNestedVertical(toolsContainer, 20f, null, TextAnchor.UpperLeft, controlsContainer =>
                 {
+                    // Fix controls panel width so it doesn't stretch and remains aligned right
+                    var le = controlsContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? controlsContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+                    le.preferredWidth = 360f;
+                    le.flexibleWidth = 0f;
+
                     Builder.CreateToggleWithLabel(controlsContainer, 350, 37, () => World.OwnerInstance?.showBackground ?? true, () =>
                     {   // Toggle background visibility and adjust preview
                         ref Captue owner = ref World.OwnerInstance;
@@ -144,60 +200,35 @@ namespace ScreenCapture
                                 () => { }); // Hide action
                         }
                     }, 0, 0, "Show Rockets");
+
+                    CreateNestedVertical(controlsContainer, 2f, null, TextAnchor.UpperCenter, cropControls =>
+                    {
+                        CaptureUtilities.CreateCropControls(cropControls, () =>
+                        {   // Unified crop change handler
+                            CaptureUtilities.UpdatePreviewCropping();
+                            RefreshLayoutForCroppedPreview();
+                            UpdateEstimatesUI();
+                        });
+                    });
                 });
             });
         }
 
         private Container CreateControlsContainer()
         {   // Create capture controls and show estimates above them
-            var MainCol = CreateVerticalContainer(window, 4f, null, TextAnchor.UpperLeft);
+            var MainCol = CreateVerticalContainer(window, 8f, null, TextAnchor.UpperLeft);
 
             var controls = CreateNestedContainer(MainCol,
                 SFS.UI.ModGUI.Type.Horizontal, TextAnchor.LowerLeft, 30f, null, true);
 
-            CreateNestedVertical(controls, 5f, null, TextAnchor.LowerLeft, LeftRow =>
+            CreateNestedVertical(controls, 5f, null, TextAnchor.LowerLeft, leftRow =>
             {
-                CreateNestedHorizontal(LeftRow, 5f, null, TextAnchor.MiddleCenter, timeControlRow =>
+                CaptureUtilities.CreateTimeControls(leftRow);
+
+                CreateNestedHorizontal(leftRow, 10f, null, TextAnchor.LowerLeft, captureRow =>
                 {
-                    // Add time control buttons
-                    Builder.CreateButton(timeControlRow, 80, 58, 0, 0, () =>
-                    {   // Toggle time pause/play state
-                        try
-                        {
-                            bool isPaused = Time.timeScale == 0;
-                            if (isPaused)
-                                Time.timeScale = 1f;
-                            else
-                            {   // Pause and save the current frame via utilities
-                                Time.timeScale = 0f;
-                                CaptureTime.SaveCurrentFrame();
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.LogError($"Play/Pause error: {ex.Message}");
-                        }
-                    }, "||");  // Simple ASCII-like pause representation
-
-                    Builder.CreateButton(timeControlRow, 80, 58, 0, 0, () => CaptureTime.StepBackwardInTime(), "<<");  // ASCII skip back
-
-                    Builder.CreateButton(timeControlRow, 80, 58, 0, 0, () => CaptureTime.StepForwardAndPause(), ">>");  // ASCII skip forward
-                });
-
-                CreateNestedHorizontal(LeftRow, 10f, null, TextAnchor.LowerLeft, CaptureRow =>
-                {
-                    Builder.CreateButton(CaptureRow, 180, 58, 0, 0, () => TakeScreenshot(), "Capture");
-                    resInput = Builder.CreateTextInput(CaptureRow, 180, 58, 0, 0, ResolutionWidth.ToString(), val =>
-                    {
-                        if (int.TryParse(val, out int w))
-                        {
-                            int maxW = CaptureUtilities.ComputeMaxSafeWidth();
-                            w = Mathf.Clamp(w, 1, maxW);
-                            resInput.Text = w.ToString();
-                            ResolutionWidth = w;
-                            UpdateEstimatesUI();
-                        }
-                    });
+                    Builder.CreateButton(captureRow, 180, 58, 0, 0, () => TakeScreenshot(), "Capture");
+                    resInput = Builder.CreateTextInput(captureRow, 180, 58, 0, 0, ResolutionWidth.ToString(), OnResolutionInputChange);
                 });
             });
 
@@ -206,20 +237,34 @@ namespace ScreenCapture
             var ZoomRow = CreateNestedVertical(controls, 5f, null, TextAnchor.UpperLeft);
             CreateZoomControls(ZoomRow);
 
-            CreateNestedHorizontal(MainCol, 10f, null, TextAnchor.UpperLeft, statsRow1 =>
+            CreateNestedHorizontal(MainCol, 73f, null, TextAnchor.UpperLeft, helpRow =>
             {
-                resLabel = Builder.CreateLabel(statsRow1, 210, 34, 0, 0, "Res: -");
-                gpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "GPU: -");
-                cpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "RAM: -");
+                CreateNestedVertical(helpRow, 5f, null, TextAnchor.UpperLeft, helpCol =>
+                {
+                    CreateNestedHorizontal(helpCol, 10f, null, TextAnchor.UpperLeft, statsRow1 =>
+                    {
+                        resLabel = Builder.CreateLabel(statsRow1, 210, 34, 0, 0, "Res: -");
+                        gpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "GPU: -");
+                        cpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "RAM: -");
+                    });
+
+                    CreateNestedHorizontal(helpCol, 10f, null, TextAnchor.UpperLeft, statsRow2 =>
+                    {
+                        pngLabel = Builder.CreateLabel(statsRow2, 170, 34, 0, 0, "PNG: -");
+                        maxLabel = Builder.CreateLabel(statsRow2, 220, 34, 0, 0, "Max Width: -");
+                        // warnLabel = Builder.CreateLabel(statsRow2, 400, 34, 0, 0, "");
+                        // warnLabel.Color = new Color(1f, 0.35f, 0.2f);
+                    });
+
+                });
+
+                CreateNestedHorizontal(helpRow, 10f, null, TextAnchor.UpperLeft, bottomRow =>
+                {
+                    Builder.CreateButton(bottomRow, 285, 58, 0, 0, () => FileUtilities.OpenCurrentWorldCapturesFolder(), "Open Captures");
+                });
             });
 
-            CreateNestedHorizontal(MainCol, 10f, null, TextAnchor.UpperLeft, statsRow2 =>
-            {
-                pngLabel = Builder.CreateLabel(statsRow2, 170, 34, 0, 0, "PNG: -");
-                maxLabel = Builder.CreateLabel(statsRow2, 220, 34, 0, 0, "Max Width: -");
-                warnLabel = Builder.CreateLabel(statsRow2, 400, 34, 0, 0, "");
-                warnLabel.Color = new Color(1f, 0.35f, 0.2f);
-            });
+
 
             return controls;
         }
@@ -286,6 +331,9 @@ namespace ScreenCapture
             if (ownerRef == null)
                 return;
 
+            // Unsubscribe from screen size changes
+            Captue.OnScreenSizeChanged -= OnScreenSizeChanged;
+
             if (window != null && !((UITools.ClosableWindow)window).Minimized)
                 ownerRef.windowCollapsedAction?.Invoke();
 
@@ -313,7 +361,7 @@ namespace ScreenCapture
                 ownerRef.rocketsWindow = null;
             }
 
-            resLabel = null; gpuLabel = null; cpuLabel = null; pngLabel = null; maxLabel = null; warnLabel = null; resInput = null;
+            resLabel = null; gpuLabel = null; cpuLabel = null; pngLabel = null; maxLabel = null; resInput = null; 
 
             Captue.PreviewImage = null;
             previewContainer = null;
@@ -323,7 +371,8 @@ namespace ScreenCapture
             if (existing != null)
                 UnityEngine.Object.Destroy(existing);
 
-            ownerRef = null;
+            // Do not null the global OwnerInstance here; it is a persistent component
+            // ownerRef = null;
         }
 
         public void UpdateBackgroundWindowVisibility()
@@ -366,27 +415,69 @@ namespace ScreenCapture
         }
 
         public void UpdateEstimatesUI()
-        {   // Refresh estimate labels, colors, and warnings based on current settings
+        {   // Refresh estimate labels with throttling and caching optimization
             ref Captue ownerRef = ref World.OwnerInstance;
             if (ownerRef == null)
                 return;
 
-            if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null || warnLabel == null)
+            if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null)
                 return;
 
-            var (w, h) = CaptureUtilities.GetResolutionFromWidth(ResolutionWidth);
-            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(ResolutionWidth);
+            // Throttle updates to avoid excessive recalculation
+            float currentTime = Time.unscaledTime;
+            if (currentTime - lastUpdateTime < UPDATE_INTERVAL && lastEstimateWidth == ResolutionWidth)
+                return;
+
+            lastUpdateTime = currentTime;
+            lastEstimateWidth = ResolutionWidth;
+
+            // Calculate crop factors to determine render requirements
+            float leftCrop = CropLeft / 100f;
+            float topCrop = CropTop / 100f;
+            float rightCrop = CropRight / 100f;
+            float bottomCrop = CropBottom / 100f;
+
+            float totalHorizontal = leftCrop + rightCrop;
+            float totalVertical = topCrop + bottomCrop;
+
+            if (totalHorizontal >= 1f)
+            {
+                float scale = 0.99f / totalHorizontal;
+                leftCrop *= scale;
+                rightCrop *= scale;
+            }
+
+            if (totalVertical >= 1f)
+            {
+                float scale = 0.99f / totalVertical;
+                topCrop *= scale;
+                bottomCrop *= scale;
+            }
+
+            float cropWidthFactor = 1f - leftCrop - rightCrop;
+            float cropHeightFactor = 1f - topCrop - bottomCrop;
+
+            // Calculate render dimensions needed for the target resolution
+            int targetWidth = ResolutionWidth;
+            int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
+            int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
+            int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
+
+            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
             var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
-            int maxSafe = CaptureUtilities.ComputeMaxSafeWidth();
+
+            // Calculate max safe width accounting for crop
+            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
+            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
 
             float gpuUsage = gpuBudget > 0 ? (float)gpuNeed / gpuBudget : 0f;
             float cpuUsage = cpuBudget > 0 ? (float)cpuNeed / cpuBudget : 0f;
 
-            resLabel.Text = $"Res: {w}x{h}";
+            resLabel.Text = $"Res: {targetWidth}x{targetHeight}";
             gpuLabel.Text = $"GPU: {CaptureUtilities.FormatMB(gpuNeed)}";
             cpuLabel.Text = $"RAM: {CaptureUtilities.FormatMB(cpuNeed)}";
             pngLabel.Text = $"PNG: {CaptureUtilities.FormatMB((long)Math.Max(1024, rawBytes * 0.30))}";
-            maxLabel.Text = $"Max Width: {maxSafe}";
+            maxLabel.Text = $"Max Width: {maxSafeTargetWidth}";
 
             Color ok = Color.white;
             Color warn = new Color(1f, 0.8f, 0.25f);
@@ -397,13 +488,41 @@ namespace ScreenCapture
             resLabel.Color = (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok);
 
             SetTextInputColor(resInput, (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok));
+        }
 
-            if (gpuUsage >= 1f || cpuUsage >= 1f)
-                warnLabel.Text = "Warning: resolution exceeds available memory. It will be clamped at capture.";
-            else if (gpuUsage >= 0.8f || cpuUsage >= 0.8f)
-                warnLabel.Text = "High memory usage: consider reducing resolution.";
-            else
-                warnLabel.Text = "";
+        private void OnScreenSizeChanged()
+        {   // Handle screen size changes by updating UI elements and clamping resolution if needed
+            if (resInput == null)
+                return;
+
+            // Calculate crop factors for new screen size
+            float leftCrop = CropLeft / 100f;
+            float rightCrop = CropRight / 100f;
+            float totalHorizontal = leftCrop + rightCrop;
+
+            if (totalHorizontal >= 1f)
+            {
+                float scale = 0.99f / totalHorizontal;
+                leftCrop *= scale;
+                rightCrop *= scale;
+            }
+
+            float cropWidthFactor = 1f - leftCrop - rightCrop;
+            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
+            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
+
+            // Clamp current resolution if it exceeds new max
+            if (ResolutionWidth > maxSafeTargetWidth)
+            {
+                ResolutionWidth = maxSafeTargetWidth;
+                resInput.Text = ResolutionWidth.ToString();
+            }
+
+            // Update estimates to reflect new screen dimensions
+            UpdateEstimatesUI();
+
+            // Refresh preview layout for new screen size
+            RefreshLayoutForCroppedPreview();
         }
 
         public override void Refresh()
@@ -415,8 +534,117 @@ namespace ScreenCapture
             Show();
         }
 
+        private void StartWindowColorAnimation(bool success = true)
+        {   // Start coroutine to animate window background color based on save result
+            if (window != null && World.UIHolder != null)
+            {
+                // Stop any current animation before starting new one
+                if (currentAnimation != null)
+                {
+                    var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+                    if (monoBehaviour != null)
+                        monoBehaviour.StopCoroutine(currentAnimation);
+                    currentAnimation = null;
+                }
+
+                var monoBehaviour2 = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+                if (monoBehaviour2 != null)
+                    currentAnimation = monoBehaviour2.StartCoroutine(AnimateWindowColor(success));
+            }
+        }
+
+        private IEnumerator AnimateWindowColor(bool success = true)
+        {   // Animate window background using sine wave over 0.8 seconds with result-based color
+            var closableWindow = window as UITools.ClosableWindow;
+            if (closableWindow == null)
+                yield break;
+
+            // Find any graphic component to animate
+            var graphics = closableWindow.gameObject.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
+            var targetGraphic = graphics.FirstOrDefault(g =>
+                g.name.ToLower().Contains("back") ||
+                g.name.ToLower().Contains("background") ||
+                g.name.ToLower().Contains("game"));
+
+            if (targetGraphic == null && graphics.Length > 0)
+                targetGraphic = graphics[0];
+
+            if (targetGraphic == null)
+            {
+                Debug.LogWarning("Could not find background component to animate");
+                yield break;
+            }
+
+            Color originalColor = targetGraphic.color;
+            Color effectColor = success ?
+                new Color(0.0018f, 0.6902f, 0.0804f, 1f) :  // Green for success
+                new Color(0.8f, 0.1f, 0.1f, 1f);           // Red for failure
+
+            float duration = 0.8f;
+            float elapsed = 0f;
+
+            while (elapsed < duration)
+            {   // Use sine wave pattern for smooth color transition
+                float t = elapsed / duration;
+                float sineWave = Mathf.Sin(t * Mathf.PI);
+
+                targetGraphic.color = Color.Lerp(originalColor, effectColor, sineWave);
+
+                elapsed += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            targetGraphic.color = originalColor;
+        }
+
+        private IEnumerator DelayedAnimation(bool success = true)
+        {   // Wait for game to settle then show save result animation
+            yield return new WaitForSecondsRealtime(0.15f);
+            StartWindowColorAnimation(success);
+        }
+
+        private IEnumerator VerifyAndShowResult(string worldFolderPath, string fileName, byte[] pngBytes, int renderWidth, int outWidth, int outHeight)
+        {   // Wait for file system to flush, verify save, then show result with delay
+            yield return new WaitForSecondsRealtime(0.1f);
+
+            string fullPath = Path.Combine(worldFolderPath, fileName);
+            bool saveSuccess = false;
+
+            try
+            {
+                if (File.Exists(fullPath))
+                {
+                    var fileInfo = new FileInfo(fullPath);
+                    if (fileInfo.Length > 0 && fileInfo.Length == pngBytes.Length)
+                    {
+                        saveSuccess = true;
+                        var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
+                        Debug.Log($"Verified save {outWidth}x{outHeight}. Memory (render): GPU {CaptureUtilities.FormatMB(gpuNeed)}, CPU {CaptureUtilities.FormatMB(cpuNeed)}; file {CaptureUtilities.FormatMB(pngBytes.LongLength)}");
+                    }
+                    else
+                    {
+                        UnityEngine.Debug.LogError($"File size mismatch. Expected: {pngBytes.Length}, Actual: {fileInfo.Length}");
+                        saveSuccess = false;
+                    }
+                }
+                else
+                {
+                    UnityEngine.Debug.LogError("Screenshot file does not exist after save");
+                    saveSuccess = false;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                UnityEngine.Debug.LogError($"File verification failed: {ex.Message}");
+                saveSuccess = false;
+            }
+
+            yield return new WaitForSecondsRealtime(0.1f);
+            StartWindowColorAnimation(saveSuccess);
+        }
+
         public void TakeScreenshot()
-        {   // Capture and save a screenshot at the specified resolution (moved from Utilities)
+        {   // Capture and save a screenshot at the specified resolution and show result animation
             ref Captue owner = ref World.OwnerInstance;
             if (owner == null) return;
 
@@ -427,21 +655,64 @@ namespace ScreenCapture
                 else
                 {
                     UnityEngine.Debug.LogError("Cannot take screenshot: Camera not available");
+                    StartWindowColorAnimation(false);
                     return;
                 }
             }
 
-            int width = ResolutionWidth;
-            int maxSafe = CaptureUtilities.ComputeMaxSafeWidth();
-            if (width > maxSafe)
+            // Calculate crop factors
+            float leftCrop = CropLeft / 100f;
+            float topCrop = CropTop / 100f;
+            float rightCrop = CropRight / 100f;
+            float bottomCrop = CropBottom / 100f;
+
+            // Ensure total crop doesn't exceed 100%
+            float totalHorizontal = leftCrop + rightCrop;
+            float totalVertical = topCrop + bottomCrop;
+
+            if (totalHorizontal >= 1f)
             {
-                var (ow, oh) = CaptureUtilities.GetResolutionFromWidth(width);
-                width = maxSafe;
-                var (sw, sh) = CaptureUtilities.GetResolutionFromWidth(width);
-                Debug.LogWarning($"Requested {ow}x{oh} exceeds safe memory budgets. Using {sw}x{sh} as the maximum available on this device.");
+                float scale = 0.99f / totalHorizontal;
+                leftCrop *= scale;
+                rightCrop *= scale;
             }
 
-            int height = Mathf.RoundToInt((float)width / (float)Screen.width * (float)Screen.height);
+            if (totalVertical >= 1f)
+            {
+                float scale = 0.99f / totalVertical;
+                topCrop *= scale;
+                bottomCrop *= scale;
+            }
+
+            // Calculate the render dimensions to achieve target resolution for cropped area
+            float cropWidthFactor = 1f - leftCrop - rightCrop;
+            float cropHeightFactor = 1f - topCrop - bottomCrop;
+
+            int targetWidth = ResolutionWidth;
+            int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
+
+            int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
+            int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
+
+            // Check against texture limits and memory budgets using render dimensions
+            int maxTextureSize = SystemInfo.maxTextureSize;
+            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
+            var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
+
+            if (renderWidth > maxTextureSize || renderHeight > maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
+            {
+                // Calculate maximum safe render dimensions accounting for crop
+                int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
+                int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
+
+                var (ow, oh) = (targetWidth, targetHeight);
+                targetWidth = maxSafeTargetWidth;
+                targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
+                renderWidth = Mathf.RoundToInt(targetWidth / cropWidthFactor);
+                renderHeight = Mathf.RoundToInt(targetHeight / cropHeightFactor);
+
+                Debug.LogWarning($"Requested {ow}x{oh} exceeds safe limits with current crop settings. Using {targetWidth}x{targetHeight} (render {renderWidth}x{renderHeight}).");
+            }
 
             RenderTexture renderTexture = null;
             Texture2D screenshotTexture = null;
@@ -455,15 +726,13 @@ namespace ScreenCapture
 
             try
             {
-                renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-                screenshotTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                renderTexture = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
+                screenshotTexture = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
 
                 float z = Mathf.Max(Mathf.Exp(PreviewZoomLevel), 1e-6f);
 
                 if (World.MainCamera.orthographic)
-                {   // Orthographic: scale size inversely with zoom
                     World.MainCamera.orthographicSize = Mathf.Clamp(previousOrthographicSize / z, 1e-6f, 1_000_000f);
-                }
                 else
                 {   // Perspective: use FOV when in range, otherwise dolly relative to a forward pivot
                     float baseFov = Mathf.Clamp(previousFieldOfView, 5f, 120f);
@@ -474,7 +743,6 @@ namespace ScreenCapture
                     else if (rawFov > 120f)
                     {
                         World.MainCamera.fieldOfView = 120f;
-
                         var fwd = World.MainCamera.transform.forward;
                         var pivot = previousPosition + fwd * PreviewBasePivotDistance;
                         float ratio = rawFov / 120f;
@@ -484,7 +752,6 @@ namespace ScreenCapture
                     else
                     {
                         World.MainCamera.fieldOfView = 5f;
-
                         var fwd = World.MainCamera.transform.forward;
                         var pivot = previousPosition + fwd * PreviewBasePivotDistance;
                         float ratio = 5f / Mathf.Max(rawFov, 1e-6f);
@@ -502,6 +769,8 @@ namespace ScreenCapture
 
                 var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
 
+                // Set camera viewport to capture only the cropped area
+                World.MainCamera.rect = new Rect(leftCrop, bottomCrop, 1f - leftCrop - rightCrop, 1f - topCrop - bottomCrop);
                 World.MainCamera.targetTexture = renderTexture;
                 World.MainCamera.Render();
 
@@ -512,7 +781,8 @@ namespace ScreenCapture
 
                 RenderTexture.active = renderTexture;
 
-                screenshotTexture.ReadPixels(new Rect(0f, 0f, (float)width, (float)height), 0, 0);
+                // Read the full render texture since we've already cropped at the viewport level
+                screenshotTexture.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
                 screenshotTexture.Apply();
 
                 byte[] pngBytes = screenshotTexture.EncodeToPNG();
@@ -527,15 +797,23 @@ namespace ScreenCapture
                 using (var ms = new MemoryStream(pngBytes))
                     FileUtilities.InsertIo(fileName, ms, worldFolder);
 
-                var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(width);
-                Debug.Log($"Saved {width}x{height}. Approx memory: GPU {CaptureUtilities.FormatMB(gpuNeed)} (incl. depth), CPU {CaptureUtilities.FormatMB(cpuNeed)}; file size {CaptureUtilities.FormatMB(pngBytes.LongLength)} (est PNG {CaptureUtilities.FormatMB(CaptureUtilities.EstimatePngSizeBytes(rawBytes))}).");
-            }
+                string worldFolderPath = worldFolder.ToString();
 
+                if (World.UIHolder != null)
+                {
+                    var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+                    if (monoBehaviour != null)
+                        monoBehaviour.StartCoroutine(VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, targetWidth, targetHeight));
+                }
+
+                var (finalGpuNeed, finalCpuNeed, finalRawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
+                Debug.Log($"Saved {targetWidth}x{targetHeight} (render {renderWidth}x{renderHeight}). Approx memory: GPU {CaptureUtilities.FormatMB(finalGpuNeed)} (incl. depth), CPU {CaptureUtilities.FormatMB(finalCpuNeed)}; file size {CaptureUtilities.FormatMB(pngBytes.LongLength)} (est PNG {CaptureUtilities.FormatMB(CaptureUtilities.EstimatePngSizeBytes(finalRawBytes))}).");
+            }
             catch (System.Exception ex)
             {
                 UnityEngine.Debug.LogError($"Screenshot capture failed: {ex.Message}\n{ex.StackTrace}");
+                StartWindowColorAnimation(false);
             }
-
             finally
             {
                 World.MainCamera.targetTexture = null;
@@ -545,6 +823,7 @@ namespace ScreenCapture
                 World.MainCamera.orthographicSize = previousOrthographicSize;
                 World.MainCamera.fieldOfView = previousFieldOfView;
                 World.MainCamera.transform.position = previousPosition;
+                World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 QualitySettings.antiAliasing = previousAntiAliasing;
 
                 if (renderTexture != null)
@@ -552,6 +831,85 @@ namespace ScreenCapture
 
                 if (screenshotTexture != null)
                     UnityEngine.Object.Destroy(screenshotTexture);
+            }
+        }
+
+        public void RefreshLayoutForCroppedPreview()
+        {   // Force layout refresh to handle cropped preview changes
+            if (previewContainer == null || window == null || Captue.PreviewImage == null)
+                return;
+
+            // Give the layout system time to update
+            if (currentAnimation != null)
+            {
+                var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+                if (monoBehaviour != null)
+                    monoBehaviour.StopCoroutine(currentAnimation);
+                currentAnimation = null;
+            }
+
+            // Start a coroutine to update layouts after a short delay
+            if (World.UIHolder != null)
+            {
+                var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+                if (monoBehaviour != null)
+                    currentAnimation = monoBehaviour.StartCoroutine(DelayedLayoutRefresh());
+            }
+        }
+
+        private IEnumerator DelayedLayoutRefresh()
+        {   // Wait a frame then refresh layouts to ensure proper rendering
+            yield return null; // Wait a frame
+
+            if (previewContainer != null)
+            {
+                // Force immediate layout recalculation
+                LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform);
+
+                // Refresh parent layouts too
+                if (previewContainer.rectTransform.parent != null)
+                    LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform.parent as RectTransform);
+
+                // Ensure image fits properly in container
+                var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
+                var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
+
+                // Calculate proper aspect ratio of the cropped content
+                float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
+
+                // Maintain container width constraint and adjust height
+                float containerMaxWidth = 520f;
+                float finalWidth, finalHeight;
+
+                if (cropW > containerMaxWidth)
+                {   // Scale down to fit width
+                    finalWidth = containerMaxWidth;
+                    finalHeight = finalWidth / croppedAspect;
+                }
+                else
+                {   // Use original cropped dimensions
+                    finalWidth = cropW;
+                    finalHeight = cropH;
+                }
+
+                // Apply updated dimensions
+                if (Captue.PreviewImage.rectTransform != null)
+                    Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
+
+                // Update parent layout
+                var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>();
+                if (parentLayout != null)
+                {
+                    parentLayout.preferredHeight = finalHeight;
+                    parentLayout.minHeight = finalHeight;
+                }
+            }
+
+            // Re-render the preview with cropping applied
+            if (World.PreviewCamera != null && Captue.PreviewRT != null)
+            {
+                World.PreviewCamera.targetTexture = Captue.PreviewRT;
+                World.PreviewCamera.Render();
             }
         }
     }

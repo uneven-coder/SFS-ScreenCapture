@@ -6,103 +6,221 @@ using SFS.IO;
 using SFS.UI.ModGUI;
 using SFS.World;
 using UnityEngine;
+using UnityEngine.UI;
 using SystemType = System.Type;
 using static ScreenCapture.Main;
 
 namespace ScreenCapture
 {
-    // Merged file utilities class combining functionality from FileHelper and FileUtilities
+    public static class CacheManager
+    {
+        private static (int width, long gpu, long cpu, long raw) memoryCache = (-1, 0, 0, 0);
+        private static (int origW, int origH, int cropW, int cropH) dimensionsCache = (-1, -1, -1, -1);
+        private static (float left, float top, float right, float bottom) lastCropValues = (-1, -1, -1, -1);
+        private static int lastScreenW = -1, lastScreenH = -1;
+
+        public static void InvalidateMemoryCache() => memoryCache = (-1, 0, 0, 0);
+        public static void InvalidateCropCache() => dimensionsCache = (-1, -1, -1, -1);
+
+        public static void InvalidateScreenCache()
+        {
+            lastScreenW = lastScreenH = -1;
+            InvalidateMemoryCache();
+            InvalidateCropCache();
+        }
+
+        public static (long gpu, long cpu, long raw) GetCachedMemoryEstimate(int width)
+        {
+            if (memoryCache.width == width)
+                return (memoryCache.gpu, memoryCache.cpu, memoryCache.raw);
+
+            var result = CaptureUtilities.EstimateMemoryForWidthUncached(width);
+            memoryCache = (width, result.gpuBytes, result.cpuBytes, result.rawBytes);
+            return result;
+        }
+
+        public static (int cropW, int cropH) GetCachedCroppedDimensions(int origW, int origH)
+        {
+            bool cropChanged = lastCropValues.left != Main.CropLeft || lastCropValues.top != Main.CropTop ||
+                              lastCropValues.right != Main.CropRight || lastCropValues.bottom != Main.CropBottom;
+
+            if (dimensionsCache.origW == origW && dimensionsCache.origH == origH && !cropChanged)
+                return (dimensionsCache.cropW, dimensionsCache.cropH);
+
+            var result = CaptureUtilities.GetCroppedResolutionUncached(origW, origH);
+            dimensionsCache = (origW, origH, result.width, result.height);
+            lastCropValues = (Main.CropLeft, Main.CropTop, Main.CropRight, Main.CropBottom);
+            return result;
+        }
+
+        public static bool IsScreenSizeChanged()
+        {
+            if (lastScreenW != Screen.width || lastScreenH != Screen.height)
+            {
+                lastScreenW = Screen.width;
+                lastScreenH = Screen.height;
+                InvalidateScreenCache();
+                return true;
+            }
+            return false;
+        }
+    }
+
     public static class FileUtilities
-    {   // Centralized file operations to avoid duplication across classes
+    {
         public static FolderPath savingFolder = (FolderPath)typeof(FileLocations).GetProperty("SavingFolder", BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
 
-        public static FolderPath InsertIo(string folderName, FolderPath baseFolder) => 
-            InsertIntoSfS(folderName, baseFolder);  // Create subdirectory
-
-        public static FolderPath InsertIo(string fileName, Stream inputStream, FolderPath folder) => 
-            InsertIntoSfS(fileName, folder, null, inputStream);  // Save file from stream
-
-        public static FolderPath InsertIo(string fileName, byte[] fileBytes, FolderPath folder) => 
-            InsertIntoSfS(fileName, folder, fileBytes, null);  // Save file from bytes
-
-        public static string GetWorldName() => 
-            (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";  // Current world name or fallback
+        public static FolderPath InsertIo(string folderName, FolderPath baseFolder) => InsertIntoSfS(folderName, baseFolder);
+        public static FolderPath InsertIo(string fileName, Stream inputStream, FolderPath folder) => InsertIntoSfS(fileName, folder, null, inputStream);
+        public static FolderPath InsertIo(string fileName, byte[] fileBytes, FolderPath folder) => InsertIntoSfS(fileName, folder, fileBytes, null);
+        public static string GetWorldName() => (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
 
         public static FolderPath CreateWorldFolder(string worldName)
-        {   // Create screenshot subfolder for current world
+        {
             string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
                                   new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
-            
             return InsertIo(sanitizedName, Main.ScreenCaptureFolder);
         }
 
+        public static void OpenCurrentWorldCapturesFolder()
+        {
+            try
+            {
+                string worldName = GetWorldName();
+                string sanitized = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
+                                   new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
+                var folder = InsertIo(sanitized, Main.ScreenCaptureFolder);
+                string url = "file:///" + folder.ToString().Replace('\\', '/');
+                Application.OpenURL(url);
+            }
+            catch { }
+        }
+
         public static FolderPath InsertIntoSfS(string relativePath, FolderPath baseFolder, byte[] fileBytes = null, Stream inputStream = null)
-        {   // Core file/folder creation implementation
+        {
             if (inputStream != null && !inputStream.CanRead)
                 throw new ArgumentException("inputStream must be readable.", nameof(inputStream));
 
             var baseFull = baseFolder.ToString();
-
-            if (!Directory.Exists(baseFull))
-                Directory.CreateDirectory(baseFull);
+            if (!Directory.Exists(baseFull)) Directory.CreateDirectory(baseFull);
 
             var combinedFull = Path.Combine(baseFull, relativePath);
-            var isFile = (fileBytes != null) || (inputStream != null);
+            var isFile = fileBytes != null || inputStream != null;
 
             if (!isFile)
-            {   // Create directory
-                if (!Directory.Exists(combinedFull))
-                    Directory.CreateDirectory(combinedFull);
-
+            {
+                if (!Directory.Exists(combinedFull)) Directory.CreateDirectory(combinedFull);
                 return new FolderPath(combinedFull);
             }
 
-            // Create file
             var destinationDir = Path.GetDirectoryName(combinedFull) ?? baseFull;
-            if (!Directory.Exists(destinationDir))
-                Directory.CreateDirectory(destinationDir);
+            if (!Directory.Exists(destinationDir)) Directory.CreateDirectory(destinationDir);
 
-            using (var output = new FileStream(combinedFull, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var output = new FileStream(combinedFull, FileMode.Create, FileAccess.Write, FileShare.None, 65536))
             {
-                if (fileBytes != null)
-                    output.Write(fileBytes, 0, fileBytes.Length);
+                if (fileBytes != null) output.Write(fileBytes, 0, fileBytes.Length);
                 else
                 {
-                    if (inputStream.CanSeek)
-                        inputStream.Position = 0;
-                    inputStream.CopyTo(output);
+                    if (inputStream.CanSeek) inputStream.Position = 0;
+                    inputStream.CopyTo(output, 65536);
                 }
-
                 output.Flush(true);
             }
-
             return new FolderPath(destinationDir);
         }
     }
 
-    // Memory-related constants and safety parameters
     public static class MemoryConstants
     {
-        public const float SafetyMultiplier = 1.15f; // overhead margin
-        public const int GPU_COLOR_BPP = 4; // ARGB32 color buffer
-        public const int GPU_DEPTH_BPP = 4; // 24-bit depth typically occupies 32-bit surface
-        public const int CPU_BPP = 4; // Texture2D RGBA32 in RAM
-        public const double GPU_BUDGET_FRACTION = 0.4; // conservative fraction of reported memory
+        public const float SafetyMultiplier = 1.15f;
+        public const int GPU_COLOR_BPP = 4;
+        public const int GPU_DEPTH_BPP = 4;
+        public const int CPU_BPP = 4;
+        public const double GPU_BUDGET_FRACTION = 0.4;
         public const double CPU_BUDGET_FRACTION = 0.4;
     }
-    
     public static class CaptureUtilities
     {
+        private static readonly System.Collections.Generic.Dictionary<string, (int width, int height)> elementSizeCache = 
+            new System.Collections.Generic.Dictionary<string, (int, int)>();
 
         public static (int width, int height) GetResolutionFromWidth(int width)
-        {   // Calculate height from width using current screen aspect
+        {
+            string cacheKey = $"{width}_{Screen.width}_{Screen.height}";
+            if (elementSizeCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+
             width = Mathf.Max(16, width);
             int height = Mathf.RoundToInt((float)width / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
-            return (width, Mathf.Max(16, height));
+            var result = (width, Mathf.Max(16, height));
+            
+            elementSizeCache[cacheKey] = result;
+            return result;
         }
 
-        public static (long gpuBytes, long cpuBytes, long rawBytes) EstimateMemoryForWidth(int width)
-        {   // Estimate memory footprints for render/copy paths
+        public static void CreateCropControls(Container parent, System.Action onCropChange)
+        {
+            Builder.CreateLabel(parent, 350, 42, 0, 0, "Crop");
+
+            CreateNestedHorizontal(parent, 5f, null, TextAnchor.UpperRight, row1 =>
+            {
+                CreateCropInput(row1, () => Main.CropLeft, val => { Main.CropLeft = val; onCropChange?.Invoke(); });
+                CreateCropInput(row1, () => Main.CropTop, val => { Main.CropTop = val; onCropChange?.Invoke(); });
+            });
+
+            CreateNestedHorizontal(parent, 5f, null, TextAnchor.UpperRight, row2 =>
+            {
+                CreateCropInput(row2, () => Main.CropBottom, val => { Main.CropBottom = val; onCropChange?.Invoke(); });
+                CreateCropInput(row2, () => Main.CropRight, val => { Main.CropRight = val; onCropChange?.Invoke(); });
+            });
+        }
+
+        private static void CreateCropInput(Container parent, System.Func<float> getValue, System.Action<float> setValue)
+        {
+            Builder.CreateTextInput(parent, 180, 42, 0, 0, getValue().ToString("0"), val =>
+            {
+                if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float crop))
+                    setValue(Mathf.Clamp(crop, 0f, 100f));
+            });
+        }
+
+        public static void CreateTimeControls(Container parent)
+        {
+            CreateNestedHorizontal(parent, 5f, null, TextAnchor.MiddleCenter, timeControlRow =>
+            {
+                CreateTimeButton(timeControlRow, "||", () => Time.timeScale == 0 ? 1f : 0f, CaptureTime.SaveCurrentFrame);
+                CreateTimeButton(timeControlRow, "<<", null, CaptureTime.StepBackwardInTime);
+                CreateTimeButton(timeControlRow, ">>", null, CaptureTime.StepForwardAndPause);
+            });
+        }
+
+        private static void CreateTimeButton(Container parent, string text, System.Func<float> getTimeScale, System.Action action)
+        {
+            Builder.CreateButton(parent, 80, 58, 0, 0, () =>
+            {
+                try
+                {
+                    if (getTimeScale != null)
+                        Time.timeScale = getTimeScale();
+                    action?.Invoke();
+                }
+                catch (System.Exception ex) { Debug.LogError($"Time control error: {ex.Message}"); }
+            }, text);
+        }
+
+        public static Container CreateNestedHorizontal(Container parent, float spacing, RectOffset padding, TextAnchor alignment, UIBase.ContainerContentDelegate contentCreator)
+        {
+            var container = Builder.CreateContainer(parent, 0, 0);
+            container.CreateLayoutGroup(SFS.UI.ModGUI.Type.Horizontal, alignment, spacing, padding, true);
+            contentCreator?.Invoke(container);
+            return container;
+        }
+
+        public static (long gpuBytes, long cpuBytes, long rawBytes) EstimateMemoryForWidth(int width) =>
+            CacheManager.GetCachedMemoryEstimate(width);
+
+        public static (long gpuBytes, long cpuBytes, long rawBytes) EstimateMemoryForWidthUncached(int width)
+        {
             var (w, h) = GetResolutionFromWidth(width);
             long pixels = (long)w * h;
             long gpu = (long)Math.Ceiling(pixels * (MemoryConstants.GPU_COLOR_BPP + MemoryConstants.GPU_DEPTH_BPP) * MemoryConstants.SafetyMultiplier);
@@ -112,54 +230,51 @@ namespace ScreenCapture
         }
 
         public static (long gpuBudget, long cpuBudget) GetMemoryBudgets()
-        {   // Compute conservative memory budgets based on device capabilities
+        {
             long gpu = (long)(SystemInfo.graphicsMemorySize * 1024L * 1024L * MemoryConstants.GPU_BUDGET_FRACTION);
             long cpu = (long)(SystemInfo.systemMemorySize * 1024L * 1024L * MemoryConstants.CPU_BUDGET_FRACTION);
             return (gpu, cpu);
         }
 
         public static int ComputeMaxSafeWidth()
-        {   // Determine maximum safe width constrained by VRAM/RAM and texture limits
+        {
             float aspect = (float)Screen.height / Mathf.Max(1, Screen.width);
             var (gpuBudget, cpuBudget) = GetMemoryBudgets();
 
             double perPixelGPU = (MemoryConstants.GPU_COLOR_BPP + MemoryConstants.GPU_DEPTH_BPP) * MemoryConstants.SafetyMultiplier;
             double perPixelCPU = MemoryConstants.CPU_BPP * MemoryConstants.SafetyMultiplier;
 
-            double coef = aspect; // pixels = w^2 * aspect
+            double coef = aspect;
             double maxWgpu = Math.Sqrt(gpuBudget / Math.Max(1e-6, (perPixelGPU * coef)));
             double maxWcpu = Math.Sqrt(cpuBudget / Math.Max(1e-6, (perPixelCPU * coef)));
 
             int texLimit = SystemInfo.maxTextureSize > 0 ? SystemInfo.maxTextureSize : int.MaxValue;
-            int maxW = Mathf.FloorToInt((float)Math.Min(maxWgpu, maxWcpu));
-            maxW = Mathf.Clamp(maxW, 16, texLimit);
-            return maxW;
+            return Mathf.Clamp(Mathf.FloorToInt((float)Math.Min(maxWgpu, maxWcpu)), 16, texLimit);
         }
 
         public static string FormatMB(long bytes) =>
-            $"{bytes / (1024.0 * 1024.0):0.#} MB";  // Format bytes as megabytes
+            $"{bytes / (1024.0 * 1024.0):0.#} MB";
 
         public static long EstimatePngSizeBytes(long rawBytes) =>
-            (long)Math.Max(1024, rawBytes * 0.30);  // Approximate PNG size assuming moderate compression
+            (long)Math.Max(1024, rawBytes * 0.30);
 
-        // Create a preview render texture based on a given width and current screen aspect. Returns the new RT.
-        public static RenderTexture CreatePreviewRenderTexture(int previewWidth)
+        public static RenderTexture CreatePreviewRenderTexture(int previewWidth, int antiAliasing = 1)
         {
             float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
             int rtHeight = Mathf.RoundToInt(previewWidth / Mathf.Max(1e-6f, screenAspect));
 
             var rt = new RenderTexture(previewWidth, rtHeight, 24, RenderTextureFormat.ARGB32)
             {
-                antiAliasing = 1,
-                filterMode = FilterMode.Bilinear
+                antiAliasing = Mathf.Clamp(antiAliasing, 1, 8),
+                filterMode = antiAliasing > 1 ? FilterMode.Trilinear : FilterMode.Bilinear
             };
 
-            if (!rt.IsCreated()) rt.Create();
+            if (!rt.IsCreated()) 
+                rt.Create();
             return rt;
         }
 
-        // Ensure a preview camera exists and is configured based on the main camera. Returns the preview camera.
-        public static Camera EnsurePreviewCamera(Camera mainCamera, RenderTexture targetRT, Camera existingPreviewCamera)
+        public static Camera SetupPreviewCamera(Camera mainCamera, RenderTexture targetRT, Camera existingPreviewCamera = null)
         {
             Camera preview = existingPreviewCamera;
             if (preview == null)
@@ -171,29 +286,25 @@ namespace ScreenCapture
             }
 
             if (mainCamera != null)
-                preview.CopyFrom(mainCamera);
-
-            preview.enabled = false;
-            preview.targetTexture = targetRT;
-            preview.cullingMask = mainCamera != null ? mainCamera.cullingMask : ~0;
-
-            // Apply background color from BackgroundUI settings
-            preview.clearFlags = CameraClearFlags.SolidColor;
-            preview.backgroundColor = GetBackgroundColor();
-
-            if (mainCamera != null)
             {
+                preview.CopyFrom(mainCamera);
                 preview.transform.position = mainCamera.transform.position;
                 preview.transform.rotation = mainCamera.transform.rotation;
                 preview.transform.localScale = mainCamera.transform.localScale;
             }
 
+            preview.enabled = false;
+            preview.targetTexture = targetRT;
+            preview.cullingMask = mainCamera?.cullingMask ?? ~0;
+            preview.clearFlags = CameraClearFlags.SolidColor;
+            preview.backgroundColor = GetBackgroundColor();
+
             return preview;
         }
 
         public static int ComputeCullingMask(bool showBackground)
-        {   // Calculate the appropriate culling mask based on current settings
-            int mask = World.MainCamera != null ? World.MainCamera.cullingMask : ~0;
+        {
+            int mask = World.MainCamera?.cullingMask ?? ~0;
 
             if (!showBackground)
             {
@@ -205,80 +316,47 @@ namespace ScreenCapture
             return mask;
         }
 
-        public static Color GetBackgroundColor()
-        {   // Build background color from BackgroundUI's static values
-            return new Color(
-                BackgroundUI.R / 255f,
-                BackgroundUI.G / 255f,
-                BackgroundUI.B / 255f,
-                BackgroundUI.Transparent ? 0f : 1f
-            );
-        }
+        public static Color GetBackgroundColor() =>
+            new Color(BackgroundUI.R / 255f, BackgroundUI.G / 255f, BackgroundUI.B / 255f, BackgroundUI.Transparent ? 0f : 1f);
 
-        public static void ApplyCullingForRender(Camera cam, int mask)
-        {   // Apply a provided culling mask to the camera
-            if (cam == null)
-                return;
-            cam.cullingMask = mask;
-        }
-
-        public static float SnapZoomLevel(float level)
-        {   // Snap to exact 1x (level 0) when multiplier is close to 1
-            float factor = Mathf.Exp(level);
-            return Mathf.Abs(factor - 1f) <= 0.02f ? 0f : level;
-        }
-
-        public static void ApplyPreviewZoom(Camera mainCamera, Camera previewCamera, float zoom)
-        {   // Simplified zoom function without dolly adjustments
+        public static void ApplyPreviewZoom(Camera mainCamera, Camera previewCamera, float zoomLevel)
+        {
             if (previewCamera == null)
                 return;
 
-            float z = Mathf.Max(Mathf.Exp(zoom), 1e-6f);
+            float z = Mathf.Max(Mathf.Exp(zoomLevel), 1e-6f);
 
             if (previewCamera.orthographic)
-            {   // Scale orthographic size inversely with zoom
-                float baseSize = mainCamera != null ? Mathf.Max(mainCamera.orthographicSize, 1e-6f) : Mathf.Max(previewCamera.orthographicSize, 1e-6f);
-                previewCamera.orthographicSize = Mathf.Clamp(baseSize / z, 1e-6f, 1_000_000f);
+            {
+                float baseSize = mainCamera?.orthographicSize ?? previewCamera.orthographicSize;
+                previewCamera.orthographicSize = Mathf.Clamp(Mathf.Max(baseSize, 1e-6f) / z, 1e-6f, 1_000_000f);
             }
             else
-            {   // Adjust field of view within valid range
-                float baseFov = mainCamera != null ? Mathf.Clamp(mainCamera.fieldOfView, 5f, 120f) : Mathf.Clamp(previewCamera.fieldOfView, 5f, 120f);
-                float targetFov = Mathf.Clamp(baseFov / z, 5f, 120f);
-                previewCamera.fieldOfView = targetFov;
+            {
+                float baseFov = mainCamera?.fieldOfView ?? previewCamera.fieldOfView;
+                previewCamera.fieldOfView = Mathf.Clamp(Mathf.Clamp(baseFov, 5f, 120f) / z, 5f, 120f);
                 if (mainCamera != null)
                     previewCamera.transform.position = mainCamera.transform.position;
             }
         }
 
         public static System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> ApplySceneVisibilityTemporary(bool showBackground, bool showTerrain, System.Collections.Generic.HashSet<Rocket> hiddenRockets)
-        {   // Temporarily modify scene visibility based on provided settings
+        {
             var changed = new System.Collections.Generic.List<(Renderer, bool)>();
             var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(includeInactive: true);
 
-            foreach (var r in renderers)
+            for (int i = 0; i < renderers.Length; i++)
             {
-                if (r == null || r.gameObject == null)
-                    continue;
-
-                if (r.GetComponentInParent<RectTransform>() != null)
+                var r = renderers[i];
+                if (r?.gameObject == null || r.GetComponentInParent<RectTransform>() != null)
                     continue;
 
                 var go = r.gameObject;
                 string layerName = LayerMask.LayerToName(go.layer) ?? string.Empty;
 
-                bool isTerrain = go.GetComponentInParent<SFS.World.StaticWorldObject>() != null ||
-                                 go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;
-                bool isAtmosphere = IsAtmosphereObject(go);
-                bool isStars = string.Equals(layerName, "Stars", StringComparison.OrdinalIgnoreCase) || go.name.IndexOf("star", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                var parentRocket = go.GetComponentInParent<Rocket>();
-                bool isRocketHidden = parentRocket != null && hiddenRockets != null && hiddenRockets.Contains(parentRocket);
-
-                bool shouldDisable = false;
-
-                if (!showBackground && (isStars || isAtmosphere)) shouldDisable = true;
-                if (!showTerrain && isTerrain) shouldDisable = true;
-                if (isRocketHidden) shouldDisable = true;
+                bool shouldDisable = (!showBackground && IsBackgroundElement(go, layerName)) ||
+                                   (!showTerrain && IsTerrainElement(go)) ||
+                                   (hiddenRockets?.Contains(go.GetComponentInParent<Rocket>()) == true);
 
                 if (shouldDisable && r.enabled)
                 {
@@ -290,255 +368,465 @@ namespace ScreenCapture
             return changed;
         }
 
+        private static bool IsBackgroundElement(GameObject go, string layerName) =>
+            string.Equals(layerName, "Stars", System.StringComparison.OrdinalIgnoreCase) ||
+            go.name.IndexOf("star", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+            go.GetComponent<SFS.World.Atmosphere>() != null ||
+            go.name.IndexOf("atmosphere", System.StringComparison.OrdinalIgnoreCase) >= 0;
+
+        private static bool IsTerrainElement(GameObject go) =>
+            go.GetComponentInParent<SFS.World.StaticWorldObject>() != null ||
+            go.GetComponentInParent<SFS.World.Terrain.DynamicTerrain>() != null;
+
         public static void RestoreSceneVisibility(System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> changed)
-        {   // Restore previously modified scene visibility
+        {
             if (changed == null)
                 return;
 
-            foreach (var entry in changed)
+            for (int i = 0; i < changed.Count; i++)
             {
                 try
                 {
-                    if (entry.renderer != null)
-                        entry.renderer.enabled = entry.previousEnabled;
+                    if (changed[i].renderer != null)
+                        changed[i].renderer.enabled = changed[i].previousEnabled;
                 }
                 catch { }
             }
         }
 
-        public static bool IsAtmosphereObject(GameObject go)
-        {   // Determine if a GameObject represents atmosphere
-            if (go == null)
-                return false;
-
-            var name = go.name ?? string.Empty;
-            if (name.IndexOf("atmosphere", System.StringComparison.OrdinalIgnoreCase) >= 0)
-                return true;
-
-            return go.GetComponent<SFS.World.Atmosphere>() != null;
-        }
-
         public static void SetupPreview(Container imageContainer)
-        {   // Set up the preview image and render texture using World.OwnerInstance
+        {
             var previewGO = new GameObject("PreviewImage");
             previewGO.transform.SetParent(imageContainer.rectTransform, false);
 
             var rect = previewGO.AddComponent<RectTransform>();
-
             var (finalWidth, finalHeight) = CalculatePreviewDimensions();
             rect.sizeDelta = new Vector2(finalWidth, finalHeight);
 
-            var layout = imageContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ??
-                         imageContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
-            layout.preferredWidth = finalWidth;
-            layout.preferredHeight = finalHeight + 8f;
+            SetupContainerLayout(imageContainer, finalWidth, finalHeight);
 
             Captue.PreviewImage = previewGO.AddComponent<UnityEngine.UI.RawImage>();
             Captue.PreviewImage.color = Color.white;
             Captue.PreviewImage.maskable = false;
             Captue.PreviewImage.uvRect = new Rect(0, 0, 1, 1);
 
-            LastScreenWidth = Screen.width;
-            LastScreenHeight = Screen.height;
+            InitializeRenderTexture();
+            Captue.PreviewImage.texture = Captue.PreviewRT;
 
-            // Recreate RT
+            World.PreviewCamera = SetupPreviewCamera(World.MainCamera, Captue.PreviewRT, World.PreviewCamera);
+            UpdatePreviewSettings();
+        }
+
+        private static void SetupContainerLayout(Container imageContainer, float width, float height)
+        {
+            var layout = imageContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ??
+                         imageContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+            layout.minWidth = layout.preferredWidth = 520f;
+            layout.flexibleWidth = 0f;
+            layout.preferredHeight = height;
+        }
+
+        private static void InitializeRenderTexture()
+        {
+            Main.LastScreenWidth = Screen.width;
+            Main.LastScreenHeight = Screen.height;
+
             if (Captue.PreviewRT != null)
             {
                 Captue.PreviewRT.Release();
                 UnityEngine.Object.Destroy(Captue.PreviewRT);
-                Captue.PreviewRT = null;
             }
-            Captue.PreviewRT = CreatePreviewRenderTexture(PreviewWidth);
-            if (Captue.PreviewRT != null && !Captue.PreviewRT.IsCreated())
+
+            Captue.PreviewRT = CreatePreviewRenderTexture(Main.PreviewWidth);
+            if (!Captue.PreviewRT.IsCreated())
                 Captue.PreviewRT.Create();
+        }
 
-            Captue.PreviewImage.texture = Captue.PreviewRT;
-
-            // Ensure preview camera
-            World.PreviewCamera = EnsurePreviewCamera(World.MainCamera, Captue.PreviewRT, World.PreviewCamera);
+        private static void UpdatePreviewSettings()
+        {
             World.PreviewCamera.cullingMask = ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
             World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
             World.PreviewCamera.backgroundColor = GetBackgroundColor();
         }
 
         public static (int width, int height) CalculatePreviewDimensions()
-        {   // Calculate the appropriate preview dimensions
+        {
             float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
-            float containerWidth = 520f;
-            float containerHeight = 430f;
+            const float containerWidth = 520f;
+            const float containerHeight = 430f;
             float containerAspect = containerWidth / containerHeight;
 
-            int finalWidth, finalHeight;
-
-            if (screenAspect > containerAspect)
-            {
-                finalWidth = Mathf.RoundToInt(containerWidth);
-                finalHeight = Mathf.RoundToInt(containerWidth / Mathf.Max(1e-6f, screenAspect));
-            }
-            else
-            {
-                finalHeight = Mathf.RoundToInt(containerHeight);
-                finalWidth = Mathf.RoundToInt(containerHeight * screenAspect);
-            }
-
-            finalWidth = Mathf.Min(finalWidth, Mathf.RoundToInt(containerWidth));
-            finalHeight = Mathf.Min(finalHeight, Mathf.RoundToInt(containerHeight));
-
-            return (finalWidth, finalHeight);
+            return screenAspect > containerAspect ?
+                (Mathf.RoundToInt(containerWidth), Mathf.RoundToInt(containerWidth / Mathf.Max(1e-6f, screenAspect))) :
+                (Mathf.RoundToInt(containerHeight * screenAspect), Mathf.RoundToInt(containerHeight));
         }
 
         public static void CleanupUI(Captue owner)
-        {   // Centralized cleanup of UI resources
-            if (owner == null)
-                return;
+        {
+            if (owner == null) return;
 
             if (Captue.PreviewRT != null)
             {
-                Captue.PreviewRT.Release();
-                UnityEngine.Object.Destroy(Captue.PreviewRT);
-                Captue.PreviewRT = null;
+                Captue.PreviewRT.Release(); UnityEngine.Object.Destroy(Captue.PreviewRT); Captue.PreviewRT = null;
             }
 
             if (World.PreviewCamera != null)
             {
-                UnityEngine.Object.Destroy(World.PreviewCamera.gameObject);
-                World.PreviewCamera = null;
+                UnityEngine.Object.Destroy(World.PreviewCamera.gameObject); World.PreviewCamera = null;
             }
 
             Captue.PreviewImage = null;
-
-            // Reset state to defaults
-            owner.showBackground = true;
-            owner.showTerrain = true;
-            HiddenRockets.Clear();
+            owner.showBackground = owner.showTerrain = true;
+            Main.HiddenRockets.Clear();
         }
 
         public static void ShowHideWindow<T>(ref T windowInstance, System.Action showAction, System.Action hideAction) where T : UIBase, new()
-        {   // Generic method to show/hide a window instance
-            if (windowInstance == null)
-                windowInstance = new T();
-
-            if (!windowInstance.IsOpen)
-                windowInstance.Show();
-            else
-                windowInstance.Hide();
-        }
-
-        public static void OnResolutionInputChange(Captue owner, string newValue)
-        {   // Update target width, estimate memory/file sizes, and clamp to a safe maximum if needed (no owner fields used)
-            if (!int.TryParse(newValue, out int num))
-                return;
-
-            int resolutionWidth = Mathf.Max(16, num);
-
-            var (gpuNeed, cpuNeed, rawBytes) = EstimateMemoryForWidth(resolutionWidth);
-            var (gpuBudget, cpuBudget) = GetMemoryBudgets();
-
-            if (gpuNeed > gpuBudget || cpuNeed > cpuBudget)
-            {   // Requested resolution is too large; trim and inform
-                int maxSafe = ComputeMaxSafeWidth();
-                var (ow, oh) = GetResolutionFromWidth(resolutionWidth);
-                resolutionWidth = Mathf.Min(resolutionWidth, maxSafe);
-                var (nw, nh) = GetResolutionFromWidth(resolutionWidth);
-
-                Debug.LogWarning($"Requested {ow}x{oh} exceeds safe memory budgets. Max safe width on this device is ~{maxSafe} ({nw}x{nh}). GPU budget {FormatMB(gpuBudget)}, CPU budget {FormatMB(cpuBudget)}; needed GPU {FormatMB(gpuNeed)}, CPU {FormatMB(cpuNeed)}.");
-            }
-            else
-            {   // Provide a quick estimate for awareness
-                long approxPng = EstimatePngSizeBytes(rawBytes);
-                var (w, h) = GetResolutionFromWidth(resolutionWidth);
-                Debug.Log($"Estimated sizes for {w}x{h}: Raw {FormatMB(rawBytes)}, GPU {FormatMB(gpuNeed)} (incl. depth), approx PNG {FormatMB(approxPng)}.");
-            }
+        {
+            if (windowInstance == null) windowInstance = new T();
+            
+            if (!windowInstance.IsOpen) windowInstance.Show(); else windowInstance.Hide();
         }
 
         public static bool IsRocketVisible(Rocket rocket) =>
-            rocket != null && !HiddenRockets.Contains(rocket);
+            rocket != null && !Main.HiddenRockets.Contains(rocket);
 
         public static void SetRocketVisible(Rocket rocket, bool visible)
-        {   // Toggle a rocket's visibility in preview/screenshot
-            if (rocket == null)
-                return;
-            if (visible) HiddenRockets.Remove(rocket); else HiddenRockets.Add(rocket);
+        {
+            if (rocket == null) return;
+            
+            if (visible) Main.HiddenRockets.Remove(rocket); else Main.HiddenRockets.Add(rocket);
         }
 
         public static void SetAllRocketsVisible(bool visible)
-        {   // Set all rockets visible or hidden at once
-            HiddenRockets.Clear();
+        {
+            Main.HiddenRockets.Clear();
             if (!visible)
             {
                 var rockets = UnityEngine.Object.FindObjectsOfType<Rocket>(includeInactive: true);
-                foreach (var r in rockets) HiddenRockets.Add(r);
+                for (int i = 0; i < rockets.Length; i++) Main.HiddenRockets.Add(rockets[i]);
             }
         }
 
         public static void UpdatePreviewCulling()
-        {   // Update the preview camera's culling and background settings
-            if (World.PreviewCamera == null || World.OwnerInstance == null)
-                return;
+        {
+            if (World.PreviewCamera == null || World.OwnerInstance == null) return;
+            
             World.PreviewCamera.cullingMask = ComputeCullingMask(World.OwnerInstance.showBackground);
             World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
             World.PreviewCamera.backgroundColor = GetBackgroundColor();
         }
 
+        public static void UpdatePreviewCropping()
+        {
+            if (World.PreviewCamera == null || Captue.PreviewImage == null)
+                return;
+
+            Main.LastScreenWidth = Screen.width;
+            Main.LastScreenHeight = Screen.height;
+
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            var (origW, origH) = CalculatePreviewDimensions();
+            var (cropW, cropH) = CacheManager.GetCachedCroppedDimensions(origW, origH);
+
+            World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
+            Captue.PreviewImage.uvRect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom);
+
+            UpdatePreviewImageSize(cropW, cropH);
+            RefreshRenderTextureIfNeeded(origW, origH);
+        }
+
+        private static (float left, float top, float right, float bottom) GetNormalizedCropValues()
+        {
+            float left = Mathf.Clamp01(Main.CropLeft / 100f);
+            float top = Mathf.Clamp01(Main.CropTop / 100f);
+            float right = Mathf.Clamp01(Main.CropRight / 100f);
+            float bottom = Mathf.Clamp01(Main.CropBottom / 100f);
+
+            float totalH = left + right;
+            float totalV = top + bottom;
+            
+            if (totalH >= 1f)
+            {
+                float s = 0.99f / totalH; 
+                left *= s; 
+                right *= s;
+            }
+            
+            if (totalV >= 1f)
+            {
+                float s = 0.99f / totalV; 
+                top *= s; 
+                bottom *= s;
+            }
+
+            return (left, top, right, bottom);
+        }
+
+        private static void UpdatePreviewImageSize(int cropW, int cropH)
+        {
+            float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
+            const float containerMaxWidth = 520f;
+            
+            float finalWidth = cropW > containerMaxWidth ? containerMaxWidth : cropW;
+            float finalHeight = finalWidth / croppedAspect;
+            
+            if (Captue.PreviewImage.rectTransform != null)
+                Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
+
+            UpdateParentLayout(finalHeight);
+        }
+
+        private static void UpdateParentLayout(float height)
+        {
+            var parent = Captue.PreviewImage.transform.parent as RectTransform;
+            if (parent != null)
+            {
+                var parentLayout = parent.GetComponent<LayoutElement>();
+                if (parentLayout != null)
+                {
+                    parentLayout.preferredWidth = 520f;
+                    parentLayout.preferredHeight = height;
+                    LayoutRebuilder.ForceRebuildLayoutImmediate(parent);
+                }
+            }
+        }
+
+        private static void RefreshRenderTextureIfNeeded(int width, int height)
+        {
+            if (Captue.PreviewRT == null || !Captue.PreviewRT.IsCreated() || 
+                Captue.PreviewRT.width != width || Captue.PreviewRT.height != height)
+            {
+                if (Captue.PreviewRT != null)
+                {
+                    Captue.PreviewRT.Release();
+                    UnityEngine.Object.Destroy(Captue.PreviewRT);
+                }
+
+                Captue.PreviewRT = CreatePreviewRenderTexture(Main.PreviewWidth);
+                if (Captue.PreviewImage != null)
+                    Captue.PreviewImage.texture = Captue.PreviewRT;
+                if (World.PreviewCamera != null)
+                    World.PreviewCamera.targetTexture = Captue.PreviewRT;
+            }
+        }
+
+        public static void ApplyCroppingToCamera(Camera camera)
+        {
+            if (camera == null)
+                return;
+                
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            
+            camera.rect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom);
+        }
+
+        public static (int width, int height) GetCroppedResolution(int originalWidth, int originalHeight) =>
+            CacheManager.GetCachedCroppedDimensions(originalWidth, originalHeight);
+
+        public static (int width, int height) GetCroppedResolutionUncached(int originalWidth, int originalHeight)
+        {
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            
+            int croppedWidth = Mathf.RoundToInt(originalWidth * (1f - left - right));
+            int croppedHeight = Mathf.RoundToInt(originalHeight * (1f - top - bottom));
+            
+            return (Mathf.Max(1, croppedWidth), Mathf.Max(1, croppedHeight));
+        }
+
+        public static Rect GetCroppedReadRect(int renderWidth, int renderHeight)
+        {
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            
+            int leftPixels = Mathf.RoundToInt(left * renderWidth);
+            int rightPixels = Mathf.RoundToInt(right * renderWidth);
+            int topPixels = Mathf.RoundToInt(top * renderHeight);
+            int bottomPixels = Mathf.RoundToInt(bottom * renderHeight);
+            
+            int croppedWidth = Mathf.Max(1, renderWidth - leftPixels - rightPixels);
+            int croppedHeight = Mathf.Max(1, renderHeight - topPixels - bottomPixels);
+            
+            return new Rect(leftPixels, bottomPixels, croppedWidth, croppedHeight);
+        }
     }
 
-    // Time management and frame-history utilities moved out of UI into a dedicated class
     public static class CaptureTime
-    {   // Manage saving/loading world saves and perform small time steps via TimeStepHelper
+    {
         private static readonly int MaxFrameHistory = 30;
         private static readonly System.Collections.Generic.List<object> frameHistory = new System.Collections.Generic.List<object>(MaxFrameHistory);
         private static int currentFrameIndex = -1;
 
         public static void SaveCurrentFrame()
-        {   // Create a world save and push it onto the history stack
+        {
             try
             {
                 var gameManagerType = System.Type.GetType("SFS.World.GameManager, Assembly-CSharp");
-                if (gameManagerType == null)
-                {
-                    Debug.LogWarning("GameManager type not found");
-                    return;
-                }
+                if (gameManagerType == null) { Debug.LogWarning("GameManager type not found"); return; }
 
                 var gameManager = UnityEngine.Object.FindObjectOfType(gameManagerType);
-                if (gameManager == null)
-                {
-                    Debug.LogWarning("GameManager instance not found");
-                    return;
-                }
+                if (gameManager == null) { Debug.LogWarning("GameManager instance not found"); return; }
 
                 var createSaveMethod = gameManagerType.GetMethod("CreateWorldSave", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (createSaveMethod == null)
-                {
-                    Debug.LogWarning("CreateWorldSave method not found");
-                    return;
-                }
+                if (createSaveMethod == null) { Debug.LogWarning("CreateWorldSave method not found"); return; }
 
                 object worldSave = createSaveMethod.Invoke(gameManager, null);
-                if (worldSave == null)
-                {
-                    Debug.LogWarning("Failed to create world save");
-                    return;
-                }
+                if (worldSave == null) { Debug.LogWarning("Failed to create world save"); return; }
 
                 if (currentFrameIndex >= 0 && currentFrameIndex < frameHistory.Count - 1)
                     frameHistory.RemoveRange(currentFrameIndex + 1, frameHistory.Count - currentFrameIndex - 1);
 
                 frameHistory.Add(worldSave);
-                if (frameHistory.Count > MaxFrameHistory)
-                    frameHistory.RemoveAt(0);
+                if (frameHistory.Count > MaxFrameHistory) frameHistory.RemoveAt(0);
 
                 currentFrameIndex = frameHistory.Count - 1;
                 Debug.Log($"Saved frame {currentFrameIndex + 1}/{frameHistory.Count}");
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error saving frame: {ex.Message}");
-            }
+            catch (Exception ex) { Debug.LogError($"Error saving frame: {ex.Message}"); }
         }
 
         public static void LoadFrame(int index)
-        {   // Load a world save from history into the current game
+        {
+            try
+            {
+                if (index < 0 || index >= frameHistory.Count) { Debug.LogError($"Invalid frame index: {index}"); return; }
+
+                object worldSave = frameHistory[index];
+                if (worldSave == null) { Debug.LogError("World save is null"); return; }
+
+                var gameManagerType = System.Type.GetType("SFS.World.GameManager, Assembly-CSharp");
+                var msgDrawerType = System.Type.GetType("SFS.UI.MsgDrawer, Assembly-CSharp");
+
+                if (gameManagerType == null || msgDrawerType == null) { Debug.LogError("Required types not found"); return; }
+
+                var gameManager = UnityEngine.Object.FindObjectOfType(gameManagerType);
+                var msgDrawer = UnityEngine.Object.FindObjectOfType(msgDrawerType);
+
+                if (gameManager == null || msgDrawer == null) { Debug.LogError("Required instances not found"); return; }
+
+                var loadSaveMethod = gameManagerType.GetMethod("LoadSave", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (loadSaveMethod == null) { Debug.LogError("LoadSave method not found"); return; }
+
+                loadSaveMethod.Invoke(gameManager, new[] { worldSave, false, msgDrawer });
+                currentFrameIndex = index;
+                Time.timeScale = 0f;
+
+                Debug.Log($"Loaded frame {index + 1}/{frameHistory.Count}");
+            }
+            catch (Exception ex) { Debug.LogError($"Error loading frame: {ex.Message}"); Time.timeScale = 0f; }
+        }
+
+        public static void StepForwardAndPause()
+        {
+            try
+            {
+                SaveCurrentFrame();
+
+                GameObject helperGo = new GameObject("TimeStepHelper");
+                var helper = helperGo.AddComponent<TimeStepHelper>();
+
+                helper.OnStepComplete = () =>
+                {
+                    UnityEngine.Object.Destroy(helperGo);
+
+                    try
+                    {
+                        var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
+                        if (worldTimeType != null)
+                        {
+                            var mainField = worldTimeType.GetField("main");
+                            var worldTime = mainField?.GetValue(null);
+                            var worldTimeField = worldTimeType?.GetField("worldTime");
+
+                            if (worldTimeField != null && worldTime != null)
+                            {
+                                double currentTime = (double)worldTimeField.GetValue(worldTime);
+                                Debug.Log($"Final time: {currentTime:F2}s");
+                            }
+                        }
+                    }
+                    catch (Exception ex) { Debug.LogWarning($"Error reading time: {ex.Message}"); }
+                };
+
+                helper.ConfigureStep(0.1f, 1, frameHistory);
+                helper.BeginTimeStep();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Step forward error: {ex.Message}");
+                Time.timeScale = 0f;
+            }
+        }
+
+        public static void StepBackwardInTime()
+        {
+            try
+            {
+                Time.timeScale = 0f;
+
+                if (frameHistory.Count == 0)
+                {
+                    Debug.Log("No frame history available");
+                    return;
+                }
+
+                int nextFrameIndex = currentFrameIndex > 0 ? currentFrameIndex - 1 :
+                                    currentFrameIndex == 0 ? -1 :
+                                    currentFrameIndex == -1 && frameHistory.Count > 1 ? frameHistory.Count - 2 : -1;
+
+                if (nextFrameIndex < 0 || nextFrameIndex >= frameHistory.Count)
+                {
+                    Debug.Log(currentFrameIndex == 0 ? "Already at oldest saved frame" : "No previous frame to step back to");
+                    return;
+                }
+
+                LoadFrameWithoutSave(nextFrameIndex);
+
+                try
+                {
+                    var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
+                    if (worldTimeType != null)
+                    {
+                        var mainField = worldTimeType.GetField("main");
+                        var worldTime = mainField?.GetValue(null);
+                        var setStateMethod = worldTimeType?.GetMethod("SetState");
+
+                        if (setStateMethod != null && worldTime != null)
+                            setStateMethod.Invoke(worldTime, new object[] { 0.0, true, false });
+
+                        var worldTimeField = worldTimeType?.GetField("worldTime");
+                        if (worldTimeField != null && worldTime != null)
+                        {
+                            double currentTime = (double)worldTimeField.GetValue(worldTime);
+                            Debug.Log($"Current world time after step back: {currentTime:F2}s");
+                        }
+                    }
+                }
+                catch (Exception ex) { Debug.LogWarning($"Error reading time: {ex.Message}"); }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Step back error: {ex.Message}");
+                Time.timeScale = 0f;
+            }
+        }
+
+        public static void SaveOnPause()
+        {
+            if (Time.timeScale > 0f)
+            {
+                SaveCurrentFrame();
+                Debug.Log("Saved frame on pause");
+            }
+        }
+
+        public static void SaveOnResumeAndUnpause()
+        {
+            SaveCurrentFrame();
+            Time.timeScale = 1f;
+            Debug.Log("Saved frame on resume and unpaused");
+        }
+
+        private static void LoadFrameWithoutSave(int index)
+        {
             try
             {
                 if (index < 0 || index >= frameHistory.Count)
@@ -583,7 +871,7 @@ namespace ScreenCapture
                 currentFrameIndex = index;
                 Time.timeScale = 0f;
 
-                Debug.Log($"Loaded frame {index + 1}/{frameHistory.Count}");
+                Debug.Log($"Loaded frame {index + 1}/{frameHistory.Count} without save");
             }
             catch (Exception ex)
             {
@@ -592,130 +880,8 @@ namespace ScreenCapture
             }
         }
 
-        public static void StepForwardAndPause()
-        {   // Advance a short real-time step and save before/after states
-            try
-            {
-                Debug.Log("Starting time step with coroutine approach");
-
-                SaveCurrentFrame();
-
-                GameObject helperGo = new GameObject("TimeStepHelper");
-                var helper = helperGo.AddComponent<TimeStepHelper>();
-
-                helper.OnStepComplete = () =>
-                {
-                    UnityEngine.Object.Destroy(helperGo);
-                    SaveCurrentFrame();
-                    Debug.Log("Time step complete via coroutine");
-
-                    try
-                    {
-                        var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
-                        if (worldTimeType != null)
-                        {
-                            var mainField = worldTimeType.GetField("main");
-                            var worldTime = mainField?.GetValue(null);
-                            var worldTimeField = worldTimeType?.GetField("worldTime");
-
-                            if (worldTimeField != null && worldTime != null)
-                            {
-                                double currentTime = (double)worldTimeField.GetValue(worldTime);
-                                Debug.Log($"Final time: {currentTime:F2}s");
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.LogWarning($"Error reading time: {ex.Message}");
-                    }
-                };
-
-                helper.ConfigureStep(0.1f, 1, frameHistory);
-                helper.BeginTimeStep();
-
-                Debug.Log("Time step coroutine started");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Step forward error: {ex.Message}");
-                Time.timeScale = 0f;
-            }
-        }
-
-        public static void StepBackwardInTime()
-        {   // Load previous saved frame and perform a tiny settle step
-            try
-            {
-                Time.timeScale = 0f;
-
-                if (frameHistory.Count == 0)
-                {
-                    Debug.Log("No frame history available");
-                    return;
-                }
-
-                int nextFrameIndex = -1;
-
-                if (currentFrameIndex > 0)
-                    nextFrameIndex = currentFrameIndex - 1;
-                else if (currentFrameIndex == 0)
-                {
-                    Debug.Log("Already at oldest saved frame");
-                    return;
-                }
-                else
-                    nextFrameIndex = frameHistory.Count - 1;
-
-                if (nextFrameIndex < 0 || nextFrameIndex >= frameHistory.Count)
-                {
-                    Debug.LogError("Invalid frame index calculated");
-                    return;
-                }
-
-                LoadFrame(nextFrameIndex);
-
-                GameObject settleHelper = new GameObject("SettleHelper");
-                var settle = settleHelper.AddComponent<TimeStepHelper>();
-
-                settle.OnStepComplete = () =>
-                {
-                    UnityEngine.Object.Destroy(settleHelper);
-                    Time.timeScale = 0f;
-
-                    var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
-                    if (worldTimeType != null)
-                    {
-                        var mainField = worldTimeType.GetField("main");
-                        var worldTime = mainField?.GetValue(null);
-                        var setStateMethod = worldTimeType?.GetMethod("SetState");
-
-                        if (setStateMethod != null && worldTime != null)
-                            setStateMethod.Invoke(worldTime, new object[] { 0.0, true, false });
-
-                        var worldTimeField = worldTimeType?.GetField("worldTime");
-                        if (worldTimeField != null && worldTime != null)
-                        {
-                            double currentTime = (double)worldTimeField.GetValue(worldTime);
-                            Debug.Log($"Current world time after settle: {currentTime:F2}s");
-                        }
-                    }
-
-                    Debug.Log("Time step settle complete");
-                };
-
-                settle.ConfigureStep(0.01f, 0, frameHistory);
-                settle.BeginTimeStep();
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Step back error: {ex.Message}");
-                Time.timeScale = 0f;
-            }
-        }
-
         public static double ExtractTimeFromSave(object worldSave)
-        {   // Try to extract a numeric time from a world save object
+        {
             try
             {
                 var t = worldSave.GetType();
@@ -746,9 +912,8 @@ namespace ScreenCapture
         }
     }
 
-    // Time stepping helper to advance real-time for a small number of steps
     public class TimeStepHelper : UnityEngine.MonoBehaviour
-    {   // Coroutine-driven helper to run short real-time steps and notify on completion
+    {
         public Action OnStepComplete;
 
         private float stepSeconds = 0.1f;
@@ -757,14 +922,14 @@ namespace ScreenCapture
         private System.Collections.Generic.List<object> frameHistoryRef;
 
         public void ConfigureStep(float stepLength, int steps, System.Collections.Generic.List<object> frameHistory)
-        {   // Configure duration and number of steps for the helper
+        {
             stepSeconds = Math.Max(0.0001f, stepLength);
             stepsToTake = Math.Max(0, steps);
             frameHistoryRef = frameHistory;
         }
 
         public void BeginTimeStep()
-        {   // Start the coroutine that runs the configured real-time steps
+        {
             if (running)
                 return;
 
@@ -773,14 +938,21 @@ namespace ScreenCapture
         }
 
         private System.Collections.IEnumerator RunStepsCoroutine()
-        {   // Run the requested number of real-time steps, pausing the game's time between steps
-            int actualSteps = Math.Max(1, stepsToTake);
+        {
+            if (stepsToTake == 0)
+                yield return null;
+            else
+            {
+                int actualSteps = Math.Max(1, stepsToTake);
 
-            for (int i = 0; i < actualSteps; i++)
-            {   // Allow the game to run for a short real-time duration
-                Time.timeScale = 1f;
-                yield return new UnityEngine.WaitForSecondsRealtime(stepSeconds);
-                Time.timeScale = 0f;
+                for (int i = 0; i < actualSteps; i++)
+                {
+                    Time.timeScale = 1f;
+                    yield return new UnityEngine.WaitForSecondsRealtime(stepSeconds);
+                    Time.timeScale = 0f;
+                    
+                    yield return new UnityEngine.WaitForSecondsRealtime(0.02f);
+                }
             }
 
             running = false;
@@ -790,7 +962,7 @@ namespace ScreenCapture
                 OnStepComplete?.Invoke();
             }
             catch (Exception ex)
-            {   // Swallow exceptions to avoid coroutine leaks
+            {
                 UnityEngine.Debug.LogWarning($"TimeStepHelper completion threw: {ex.Message}");
             }
         }

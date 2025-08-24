@@ -18,15 +18,23 @@ namespace ScreenCapture
         private static (int origW, int origH, int cropW, int cropH) dimensionsCache = (-1, -1, -1, -1);
         private static (float left, float top, float right, float bottom) lastCropValues = (-1, -1, -1, -1);
         private static int lastScreenW = -1, lastScreenH = -1;
+        
+        // Additional caching for expensive calculations
+        private static (long gpuBudget, long cpuBudget) budgetCache = (-1, -1);
+        private static int maxSafeWidthCache = -1;
+        private static int lastScreenWForMaxWidth = -1, lastScreenHForMaxWidth = -1;
 
         public static void InvalidateMemoryCache() => memoryCache = (-1, 0, 0, 0);
         public static void InvalidateCropCache() => dimensionsCache = (-1, -1, -1, -1);
+        public static void InvalidateBudgetCache() => budgetCache = (-1, -1);
+        public static void InvalidateMaxWidthCache() => maxSafeWidthCache = -1;
 
         public static void InvalidateScreenCache()
         {
             lastScreenW = lastScreenH = -1;
             InvalidateMemoryCache();
             InvalidateCropCache();
+            InvalidateMaxWidthCache();
         }
 
         public static (long gpu, long cpu, long raw) GetCachedMemoryEstimate(int width)
@@ -37,6 +45,26 @@ namespace ScreenCapture
             var result = CaptureUtilities.EstimateMemoryForWidthUncached(width);
             memoryCache = (width, result.gpuBytes, result.cpuBytes, result.rawBytes);
             return result;
+        }
+
+        public static (long gpuBudget, long cpuBudget) GetCachedMemoryBudgets()
+        {
+            if (budgetCache.gpuBudget != -1)
+                return budgetCache;
+
+            budgetCache = CaptureUtilities.GetMemoryBudgetsUncached();
+            return budgetCache;
+        }
+
+        public static int GetCachedMaxSafeWidth()
+        {
+            if (maxSafeWidthCache != -1 && lastScreenWForMaxWidth == Screen.width && lastScreenHForMaxWidth == Screen.height)
+                return maxSafeWidthCache;
+
+            maxSafeWidthCache = CaptureUtilities.ComputeMaxSafeWidthUncached();
+            lastScreenWForMaxWidth = Screen.width;
+            lastScreenHForMaxWidth = Screen.height;
+            return maxSafeWidthCache;
         }
 
         public static (int cropW, int cropH) GetCachedCroppedDimensions(int origW, int origH)
@@ -142,7 +170,27 @@ namespace ScreenCapture
     public static class CaptureUtilities
     {
         private static readonly System.Collections.Generic.Dictionary<string, (int width, int height)> elementSizeCache = 
-            new System.Collections.Generic.Dictionary<string, (int, int)>();
+            new System.Collections.Generic.Dictionary<string, (int, int)>(64); // Preallocate capacity
+
+        // Object pool for performance-critical operations
+        private static readonly System.Collections.Queue rendererListPool = new System.Collections.Queue();
+
+        private static System.Collections.Generic.List<(Renderer, bool)> GetPooledRendererList()
+        {
+            if (rendererListPool.Count > 0)
+            {
+                var list = (System.Collections.Generic.List<(Renderer, bool)>)rendererListPool.Dequeue();
+                list.Clear();
+                return list;
+            }
+            return new System.Collections.Generic.List<(Renderer, bool)>(64);
+        }
+
+        private static void ReturnPooledRendererList(System.Collections.Generic.List<(Renderer, bool)> list)
+        {
+            if (list != null && rendererListPool.Count < 4) // Limit pool size
+                rendererListPool.Enqueue(list);
+        }
 
         public static (int width, int height) GetResolutionFromWidth(int width)
         {
@@ -229,17 +277,23 @@ namespace ScreenCapture
             return (gpu, cpu, raw);
         }
 
-        public static (long gpuBudget, long cpuBudget) GetMemoryBudgets()
+        public static (long gpuBudget, long cpuBudget) GetMemoryBudgets() =>
+            CacheManager.GetCachedMemoryBudgets();
+
+        public static (long gpuBudget, long cpuBudget) GetMemoryBudgetsUncached()
         {
             long gpu = (long)(SystemInfo.graphicsMemorySize * 1024L * 1024L * MemoryConstants.GPU_BUDGET_FRACTION);
             long cpu = (long)(SystemInfo.systemMemorySize * 1024L * 1024L * MemoryConstants.CPU_BUDGET_FRACTION);
             return (gpu, cpu);
         }
 
-        public static int ComputeMaxSafeWidth()
+        public static int ComputeMaxSafeWidth() =>
+            CacheManager.GetCachedMaxSafeWidth();
+
+        public static int ComputeMaxSafeWidthUncached()
         {
             float aspect = (float)Screen.height / Mathf.Max(1, Screen.width);
-            var (gpuBudget, cpuBudget) = GetMemoryBudgets();
+            var (gpuBudget, cpuBudget) = GetMemoryBudgetsUncached();
 
             double perPixelGPU = (MemoryConstants.GPU_COLOR_BPP + MemoryConstants.GPU_DEPTH_BPP) * MemoryConstants.SafetyMultiplier;
             double perPixelCPU = MemoryConstants.CPU_BPP * MemoryConstants.SafetyMultiplier;
@@ -273,6 +327,9 @@ namespace ScreenCapture
                 rt.Create();
             return rt;
         }
+
+        public static int CalculateTargetRTWidth(int previewWidth) =>
+            previewWidth; // Width is directly specified, height is calculated from aspect
 
         public static Camera SetupPreviewCamera(Camera mainCamera, RenderTexture targetRT, Camera existingPreviewCamera = null)
         {
@@ -342,7 +399,7 @@ namespace ScreenCapture
 
         public static System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> ApplySceneVisibilityTemporary(bool showBackground, bool showTerrain, System.Collections.Generic.HashSet<Rocket> hiddenRockets)
         {
-            var changed = new System.Collections.Generic.List<(Renderer, bool)>();
+            var changed = GetPooledRendererList();
             var renderers = UnityEngine.Object.FindObjectsOfType<Renderer>(includeInactive: true);
 
             for (int i = 0; i < renderers.Length; i++)
@@ -392,6 +449,9 @@ namespace ScreenCapture
                 }
                 catch { }
             }
+
+            // Return the list to the pool for reuse
+            ReturnPooledRendererList(changed);
         }
 
         public static void SetupPreview(Container imageContainer)
@@ -414,7 +474,10 @@ namespace ScreenCapture
             Captue.PreviewImage.texture = Captue.PreviewRT;
 
             World.PreviewCamera = SetupPreviewCamera(World.MainCamera, Captue.PreviewRT, World.PreviewCamera);
-            UpdatePreviewSettings();
+            
+            // Initial render with proper visibility settings
+            if (World.OwnerInstance != null)
+                World.OwnerInstance.RequestPreviewUpdate();
         }
 
         private static void SetupContainerLayout(Container imageContainer, float width, float height)
@@ -443,10 +506,8 @@ namespace ScreenCapture
         }
 
         private static void UpdatePreviewSettings()
-        {
-            World.PreviewCamera.cullingMask = ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
-            World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
-            World.PreviewCamera.backgroundColor = GetBackgroundColor();
+        {   // Removed automatic culling update - now handled by manual requests only
+            // This prevents conflicts with the main preview rendering system
         }
 
         public static (int width, int height) CalculatePreviewDimensions()
@@ -508,12 +569,9 @@ namespace ScreenCapture
         }
 
         public static void UpdatePreviewCulling()
-        {
-            if (World.PreviewCamera == null || World.OwnerInstance == null) return;
-            
-            World.PreviewCamera.cullingMask = ComputeCullingMask(World.OwnerInstance.showBackground);
-            World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
-            World.PreviewCamera.backgroundColor = GetBackgroundColor();
+        {   // Deprecated - now handled by manual preview update requests
+            // This prevents conflicting preview rendering systems
+            World.OwnerInstance?.RequestPreviewUpdate();
         }
 
         public static void UpdatePreviewCropping()

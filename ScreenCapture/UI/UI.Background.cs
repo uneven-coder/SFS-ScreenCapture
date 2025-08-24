@@ -32,10 +32,9 @@ namespace ScreenCapture
             CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, container => {
                 // Toggle for transparency
                 Builder.CreateToggleWithLabel(container, 200, 46, () => Transparent, () =>
-                {   // Toggle transparency and refresh preview bg
+                {   // Toggle transparency and refresh preview background
                     Transparent = !Transparent;
-                    if (World.PreviewCamera != null)
-                        CaptureUtilities.UpdatePreviewCulling();
+                    World.OwnerInstance?.RequestPreviewUpdate();
                 }, 0, 0, "Transparent BG");
                 
                 // RGB color inputs
@@ -44,8 +43,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int r))
                     {
                         R = Mathf.Clamp(r, 0, 255);
-                        if (World.PreviewCamera != null)
-                            CaptureUtilities.UpdatePreviewCulling();
+                        World.OwnerInstance?.RequestPreviewUpdate();
                     }
                 });
 
@@ -54,8 +52,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int g))
                     {
                         G = Mathf.Clamp(g, 0, 255);
-                        if (World.PreviewCamera != null)
-                            CaptureUtilities.UpdatePreviewCulling();
+                        World.OwnerInstance?.RequestPreviewUpdate();
                     }
                 });
 
@@ -64,8 +61,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int b))
                     {
                         B = Mathf.Clamp(b, 0, 255);
-                        if (World.PreviewCamera != null)
-                            CaptureUtilities.UpdatePreviewCulling();
+                        World.OwnerInstance?.RequestPreviewUpdate();
                     }
                 });
                 

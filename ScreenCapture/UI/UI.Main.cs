@@ -38,7 +38,12 @@ namespace ScreenCapture
         // Performance optimization: cache frequently accessed values
         private int lastEstimateWidth = -1;
         private float lastUpdateTime;
-        private const float UPDATE_INTERVAL = 0.1f; // Update UI estimates every 100ms max
+        private const float UPDATE_INTERVAL = 0.2f; // Update UI estimates every 200ms max
+        
+        // Preview rendering optimization
+        private bool previewNeedsUpdate = true;
+        private float lastPreviewUpdate;
+        private const float PREVIEW_UPDATE_INTERVAL = 0.05f; // 20 FPS for preview
 
 
         private void OnResolutionInputChange(string val)
@@ -116,6 +121,7 @@ namespace ScreenCapture
                 prevOpen?.Invoke();
                 EnsurePreviewSetup();
                 UpdateEstimatesUI();
+                World.OwnerInstance?.RequestPreviewUpdate();
                 Debug.Log("Window opened action triggered");
             };
 
@@ -169,23 +175,23 @@ namespace ScreenCapture
                     le.flexibleWidth = 0f;
 
                     Builder.CreateToggleWithLabel(controlsContainer, 350, 37, () => World.OwnerInstance?.showBackground ?? true, () =>
-                    {   // Toggle background visibility and adjust preview
+                    {   // Toggle background visibility and refresh preview
                         ref Captue owner = ref World.OwnerInstance;
                         if (owner != null)
                         {
                             owner.showBackground = !owner.showBackground;
-                            CaptureUtilities.UpdatePreviewCulling();
                             UpdateBackgroundWindowVisibility();
+                            owner.RequestPreviewUpdate();
                         }
                     }, 0, 0, "Show Background");
 
                     Builder.CreateToggleWithLabel(controlsContainer, 350, 37, () => World.OwnerInstance?.showTerrain ?? true, () =>
-                    {   // Toggle terrain visibility and adjust preview
+                    {   // Toggle terrain visibility and refresh preview
                         ref Captue owner = ref World.OwnerInstance;
                         if (owner != null)
                         {
                             owner.showTerrain = !owner.showTerrain;
-                            CaptureUtilities.UpdatePreviewCulling();
+                            owner.RequestPreviewUpdate();
                         }
                     }, 0, 0, "Show Terrain");
 
@@ -204,10 +210,11 @@ namespace ScreenCapture
                     CreateNestedVertical(controlsContainer, 2f, null, TextAnchor.UpperCenter, cropControls =>
                     {
                         CaptureUtilities.CreateCropControls(cropControls, () =>
-                        {   // Unified crop change handler
+                        {   // Unified crop change handler with preview update
                             CaptureUtilities.UpdatePreviewCropping();
                             RefreshLayoutForCroppedPreview();
                             UpdateEstimatesUI();
+                            World.OwnerInstance?.RequestPreviewUpdate();
                         });
                     });
                 });
@@ -275,9 +282,10 @@ namespace ScreenCapture
             float GetLevel() => PreviewZoomLevel;  // Unbounded level for input
 
             void SetZoom(float z)
-            {   // Set zoom and update level based on factor
+            {   // Set zoom and update level based on factor with preview refresh
                 PreviewZoom = z;
                 PreviewZoomLevel = Mathf.Log(z);
+                World.OwnerInstance?.RequestPreviewUpdate();
             }
 
             float StepInLog(float z, int dir)
@@ -302,6 +310,7 @@ namespace ScreenCapture
                     PreviewZoomLevel = lvl;
                     zoomInput.textInput.Text = $"{GetLevel():0.00}";
                     UpdateEstimatesUI();
+                    World.OwnerInstance?.RequestPreviewUpdate();
                 }
             });
 
@@ -415,15 +424,19 @@ namespace ScreenCapture
         }
 
         public void UpdateEstimatesUI()
-        {   // Refresh estimate labels with throttling and caching optimization
+        {   // Refresh estimate labels with aggressive throttling and caching optimization
             ref Captue ownerRef = ref World.OwnerInstance;
             if (ownerRef == null)
+                return;
+
+            // Skip updates when window is minimized to save performance
+            if (window != null && ((UITools.ClosableWindow)window).Minimized)
                 return;
 
             if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null)
                 return;
 
-            // Throttle updates to avoid excessive recalculation
+            // More aggressive throttling to reduce CPU usage
             float currentTime = Time.unscaledTime;
             if (currentTime - lastUpdateTime < UPDATE_INTERVAL && lastEstimateWidth == ResolutionWidth)
                 return;

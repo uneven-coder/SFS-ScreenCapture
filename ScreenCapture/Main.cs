@@ -12,8 +12,8 @@ using static ScreenCapture.Main;
 namespace ScreenCapture
 {
     public class Main : Mod
-    {   // Primary static settings for capture with caching optimization
-        public static int PreviewWidth { get; set; } = 384;
+    {   // Primary static settings for capture with adaptive preview optimization
+        public static int PreviewWidth { get; set; } = 256; // Start with low detail, adaptive system will adjust
 
         public static FolderPath ScreenCaptureFolder { get; private set; }
         private static Captue s_captureInstance;
@@ -163,14 +163,27 @@ namespace ScreenCapture
         public static Action OnScreenSizeChanged;
         private int lastScreenWidth;
         private int lastScreenHeight;
+        private float lastPreviewUpdate;
+        
+        // Camera tracking for preview optimization
+        private Vector3 lastCameraPosition;
+        private Quaternion lastCameraRotation;
+        
+        // Adaptive preview rendering
+        private float lastSignificantChange;
+        private bool isHighDetailMode = false;
+        private const float HIGH_DETAIL_TIMEOUT = 2f; // Switch to low detail after 2 seconds of minimal changes
 
         void Awake()
         {   // Initialize camera and actions when component awakens
             Main.World.Awake();
 
-            // Initialize screen size tracking
             lastScreenWidth = Screen.width;
             lastScreenHeight = Screen.height;
+
+            // Initialize adaptive preview in high detail mode
+            lastSignificantChange = Time.unscaledTime;
+            isHighDetailMode = true;
 
             windowOpenedAction = () =>
                     WorldTime.main?.SetState(0.0, true, false);
@@ -262,11 +275,10 @@ namespace ScreenCapture
         }
 
         private void Update()
-        {   // Handle window minimization and update the preview from MonoBehaviour
+        {   // Handle window minimization and adaptive preview updates
             if (World.MainCamera == null)
                 World.MainCamera = GameCamerasManager.main?.world_Camera?.camera;
 
-            // Check for screen size changes and notify listeners
             CheckForScreenSizeChange();
 
             if (closableWindow == null)
@@ -282,11 +294,69 @@ namespace ScreenCapture
                 mainWindow?.UpdateBackgroundWindowVisibility();
             }
 
-            // Only update preview when window is open and components are available
-            if (minimized || PreviewImage == null || World.MainCamera == null || World.PreviewCamera == null)
-                return;
+            // Adaptive preview updates when window is open
+            if (!minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
+            {
+                bool needsUpdate = CheckForSignificantChanges();
+                if (needsUpdate)
+                    UpdatePreviewRendering();
+            }
+        }
 
-            UpdatePreviewRendering();
+        private bool CheckForSignificantChanges()
+        {   // Adaptive change detection with different thresholds for high/low detail modes
+            if (World.MainCamera == null || World.PreviewCamera == null)
+                return false;
+
+            var currentPos = World.MainCamera.transform.position;
+            var currentRot = World.MainCamera.transform.rotation;
+            
+            float positionChange = (currentPos - lastCameraPosition).sqrMagnitude;
+            float rotationChange = Quaternion.Angle(currentRot, lastCameraRotation);
+            
+            // Determine change level and appropriate update frequency
+            bool isSignificantChange = positionChange > 0.1f || rotationChange > 2f;
+            bool isMinorChange = positionChange > 0.001f || rotationChange > 0.1f;
+            
+            float currentTime = Time.unscaledTime;
+            float timeSinceLastUpdate = currentTime - lastPreviewUpdate;
+            
+            // Adaptive update intervals based on change magnitude
+            float updateInterval = isSignificantChange ? 0.02f :  // 50 FPS for significant changes
+                                  isMinorChange ? 0.05f :         // 20 FPS for minor changes  
+                                  0.2f;                           // 5 FPS for minimal changes
+
+            bool timeForUpdate = timeSinceLastUpdate >= updateInterval;
+            
+            if (isSignificantChange || (timeForUpdate && isMinorChange))
+            {   // Significant or scheduled minor change
+                lastSignificantChange = currentTime;
+                isHighDetailMode = true;
+                lastCameraPosition = currentPos;
+                lastCameraRotation = currentRot;
+                return true;
+            }
+            
+            if (timeForUpdate && currentTime - lastSignificantChange > HIGH_DETAIL_TIMEOUT)
+            {   // Switch to low detail mode after timeout
+                isHighDetailMode = false;
+                lastCameraPosition = currentPos;
+                lastCameraRotation = currentRot;
+                return true;
+            }
+            
+            return timeForUpdate && isMinorChange;
+        }
+
+        public void RequestPreviewUpdate()
+        {   // Public method to request preview update from UI components with high detail mode
+            if (closableWindow != null && !closableWindow.Minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
+            {
+                // Force high detail mode for manual updates
+                lastSignificantChange = Time.unscaledTime;
+                isHighDetailMode = true;
+                UpdatePreviewRendering();
+            }
         }
 
         private void CheckForScreenSizeChange()
@@ -308,42 +378,48 @@ namespace ScreenCapture
         }
 
         private void UpdatePreviewRendering()
-        {   // Handle preview rendering and screen size changes
+        {   // Adaptive preview rendering with dynamic resolution based on change magnitude
             bool screenSizeChanged = CacheManager.IsScreenSizeChanged();
-            bool rtNeedsRecreation = PreviewRT == null || !PreviewRT.IsCreated();
+            
+            // Determine appropriate preview resolution based on activity level
+            int targetPreviewWidth = isHighDetailMode ? 1024 : 256;
+            bool needsResolutionChange = Captue.PreviewRT == null || 
+                                       !Captue.PreviewRT.IsCreated() || 
+                                       Math.Abs(Captue.PreviewRT.width - CaptureUtilities.CalculateTargetRTWidth(targetPreviewWidth)) > 10;
 
-            if (screenSizeChanged || rtNeedsRecreation)
-            {   // Recreate render texture when screen size changes
+            if (screenSizeChanged || needsResolutionChange)
+            {   // Recreate render texture with appropriate resolution
                 LastScreenWidth = Screen.width;
                 LastScreenHeight = Screen.height;
 
-                if (PreviewRT != null)
+                if (Captue.PreviewRT != null)
                 {
-                    PreviewRT.Release();
-                    UnityEngine.Object.Destroy(PreviewRT);
+                    Captue.PreviewRT.Release();
+                    UnityEngine.Object.Destroy(Captue.PreviewRT);
                 }
 
-                PreviewRT = CaptureUtilities.CreatePreviewRenderTexture(PreviewWidth);
-                if (PreviewImage != null)
+                PreviewWidth = targetPreviewWidth;
+                Captue.PreviewRT = CaptureUtilities.CreatePreviewRenderTexture(targetPreviewWidth);
+                
+                if (Captue.PreviewImage != null)
                 {
-                    PreviewImage.texture = PreviewRT;
-                    var rect = PreviewImage.GetComponent<RectTransform>();
+                    Captue.PreviewImage.texture = Captue.PreviewRT;
+                    var rect = Captue.PreviewImage.GetComponent<RectTransform>();
                     var (finalWidth, finalHeight) = CaptureUtilities.CalculatePreviewDimensions();
                     rect.sizeDelta = new Vector2(finalWidth, finalHeight);
                     
-                    // If cropping is applied, update it to maintain proper aspect ratio
                     if (CropLeft > 0 || CropTop > 0 || CropRight > 0 || CropBottom > 0)
                         CaptureUtilities.UpdatePreviewCropping();
                 }
 
-                // Update preview camera target
                 if (World.PreviewCamera != null)
-                    World.PreviewCamera.targetTexture = PreviewRT;
+                    World.PreviewCamera.targetTexture = Captue.PreviewRT;
             }
 
-            // Render preview frame
-            if (World.PreviewCamera != null && PreviewRT != null)
-            {   // Configure and render preview
+            lastPreviewUpdate = Time.unscaledTime;
+
+            if (World.PreviewCamera != null && Captue.PreviewRT != null)
+            {   // Render preview with current visibility settings
                 World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(showBackground);
                 World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
                 World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
@@ -352,17 +428,13 @@ namespace ScreenCapture
                 var modified = CaptureUtilities.ApplySceneVisibilityTemporary(showBackground, showTerrain, HiddenRockets);
                 var prevTarget = World.PreviewCamera.targetTexture;
 
-                // Apply cropping if needed
                 if (CropLeft > 0 || CropTop > 0 || CropRight > 0 || CropBottom > 0)
                 {
                     if (screenSizeChanged && mainWindow != null)
-                    {
-                        // Refresh the cropping UI when screen size changes
                         mainWindow.RefreshLayoutForCroppedPreview();
-                    }
                 }
 
-                World.PreviewCamera.targetTexture = PreviewRT;
+                World.PreviewCamera.targetTexture = Captue.PreviewRT;
                 World.PreviewCamera.Render();
                 World.PreviewCamera.targetTexture = prevTarget;
 

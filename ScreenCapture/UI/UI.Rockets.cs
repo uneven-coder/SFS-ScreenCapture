@@ -55,6 +55,7 @@ namespace ScreenCapture
                     }
                     CaptureUtilities.SetAllRocketsVisible(!anyVisible);
                     RefreshRocketList();
+                    World.OwnerInstance?.RequestPreviewUpdate();
                 }, "Toggle All");
             });            // Create scrollable list container
             listContent = CreateVerticalContainer(window, 18f);
@@ -85,9 +86,10 @@ namespace ScreenCapture
                 var toggle = Builder.CreateToggleWithLabel(listContent, 400, 34, 
                     () => CaptureUtilities.IsRocketVisible(rocket), 
                     () =>
-                    {   // Toggle per-rocket visibility
+                    {   // Toggle per-rocket visibility with preview update
                         bool cur = CaptureUtilities.IsRocketVisible(rocket); 
                         CaptureUtilities.SetRocketVisible(rocket, !cur);
+                        World.OwnerInstance?.RequestPreviewUpdate();
                     }, 
                     0, 0, label);
 

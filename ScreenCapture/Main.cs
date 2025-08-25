@@ -241,6 +241,8 @@ namespace ScreenCapture
                 PreviewRT = null;
                 World.UIHolder = null;
             }
+
+            
         }
 
         public void ShowUI()
@@ -251,11 +253,14 @@ namespace ScreenCapture
                 Debug.Log("UI already exists, returning");
                 return;
             }
-            
+
             Debug.Log("Creating new MainUI");
             mainWindow = new MainUI();
             mainWindow.Show();
             Debug.Log("MainUI created and shown");
+            
+            if (GameCamerasManager.main?.world_Camera?.rotation?.Value != null)
+                GameCamerasManager.main.world_Camera.rotation.OnChange += updateCameraRotation;
         }
 
         public void HideUI()
@@ -272,7 +277,26 @@ namespace ScreenCapture
                 UnityEngine.Debug.LogWarning($"Error hiding UI: {ex.Message}");
                 mainWindow = null;
             }
+
+            if (GameCamerasManager.main?.world_Camera?.rotation?.Value != null)
+                GameCamerasManager.main.world_Camera.rotation.OnChange -= updateCameraRotation;
         }
+
+        private void updateCameraRotation()
+        {   // Update preview camera rotation to match main camera
+            if (World.MainCamera != null && World.PreviewCamera != null && GameCamerasManager.main?.world_Camera?.camera != null)
+            {
+                var targetRotation = GameCamerasManager.main.world_Camera.camera.transform.rotation;
+                World.MainCamera.transform.rotation = targetRotation;
+                World.PreviewCamera.transform.rotation = targetRotation;
+            }
+        }
+
+        // private void LateUpdate()
+        // {
+        //     if (World.MainCamera != null)
+        //         World.MainCamera.transform.rotation = 
+        // }
 
         private void Update()
         {   // Handle window minimization and adaptive preview updates

@@ -45,6 +45,8 @@ namespace ScreenCapture
         private float lastPreviewUpdate;
         private const float PREVIEW_UPDATE_INTERVAL = 0.05f; // 20 FPS for preview
 
+        // Border for the preview image
+        private Box previewBorder;
 
         private void OnResolutionInputChange(string val)
         {   // Optimized resolution input validation with crop factor consideration
@@ -153,6 +155,9 @@ namespace ScreenCapture
                     DisableRaycastsInChildren(previewContainer.gameObject);
                     previewInitialized = true;
                     Debug.Log("Preview initialized during container creation");
+
+                    // Create border after preview setup to match image dimensions
+                    CreatePreviewBorder();
                 }
                 catch (Exception ex)
                 {
@@ -376,6 +381,13 @@ namespace ScreenCapture
             previewContainer = null;
             previewInitialized = false;
 
+            // Destroy preview border if present
+            if (previewBorder != null)
+            {
+                try { UnityEngine.Object.Destroy(previewBorder.gameObject); } catch { }
+                previewBorder = null;
+            }
+
             GameObject existing = GameObject.Find("SFSRecorder");
             if (existing != null)
                 UnityEngine.Object.Destroy(existing);
@@ -387,7 +399,9 @@ namespace ScreenCapture
         public void UpdateBackgroundWindowVisibility()
         {   // Show background settings window when "Show Background" is off
             ref Captue ownerRef = ref World.OwnerInstance;
-            if (ownerRef == null || window == null)
+            
+            // Prevent showing background window if main UI is hidden or being destroyed
+            if (ownerRef == null || window == null || World.UIHolder == null)
                 return;
 
             // Only show background window when background is disabled and main window isn't minimized
@@ -416,6 +430,10 @@ namespace ScreenCapture
                 DisableRaycastsInChildren(previewContainer.gameObject);
                 previewInitialized = true;
                 Debug.Log("Preview setup completed successfully");
+                
+                // Create border if it doesn't exist
+                if (previewBorder == null)
+                    CreatePreviewBorder();
             }
             catch (Exception ex)
             {
@@ -909,6 +927,9 @@ namespace ScreenCapture
                 if (Captue.PreviewImage.rectTransform != null)
                     Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
 
+                // Update border to match new image size
+                UpdatePreviewBorderSize();
+
                 // Update parent layout
                 var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>();
                 if (parentLayout != null)
@@ -923,6 +944,94 @@ namespace ScreenCapture
             {
                 World.PreviewCamera.targetTexture = Captue.PreviewRT;
                 World.PreviewCamera.Render();
+            }
+        }
+
+        private void CreatePreviewBorder()
+        {   // Create a border box and make the preview image a child element
+            if (previewContainer == null || Captue.PreviewImage == null)
+                return;
+
+            try
+            {
+                var imageRect = Captue.PreviewImage.rectTransform;
+                if (imageRect == null)
+                    return;
+
+                // Store current image dimensions and settings
+                var currentSize = imageRect.sizeDelta;
+                var currentAnchorMin = imageRect.anchorMin;
+                var currentAnchorMax = imageRect.anchorMax;
+                var currentPivot = imageRect.pivot;
+                var currentPos = imageRect.anchoredPosition;
+
+                // Create border box with same dimensions as image
+                previewBorder = Builder.CreateBox(previewContainer, Mathf.RoundToInt(currentSize.x), Mathf.RoundToInt(currentSize.y), 0, 0, 0.2f);
+                previewBorder.Color = new Color(0.4f, 0.48f, 0.6f, 0.6f);
+
+                // Move the preview image to be a child of the border box
+                Captue.PreviewImage.transform.SetParent(previewBorder.gameObject.transform, false);
+
+                // Keep image at its original size and center it in the border
+                imageRect.anchorMin = new Vector2(0.5f, 0.5f);
+                imageRect.anchorMax = new Vector2(0.5f, 0.5f);
+                imageRect.pivot = new Vector2(0.5f, 0.5f);
+                imageRect.sizeDelta = currentSize;
+                imageRect.anchoredPosition = Vector2.zero;
+
+                // Disable layout on image since it's now positioned by its parent box
+                var imageLayout = Captue.PreviewImage.gameObject.GetComponent<LayoutElement>();
+                if (imageLayout != null)
+                    imageLayout.ignoreLayout = true;
+
+                Debug.Log($"Created preview border with image as child element");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Could not create preview border: {ex.Message}");
+            }
+        }
+
+        private void UpdatePreviewBorderSize()
+        {   // Update border size when image dimensions change while preserving image size
+            if (previewBorder == null || Captue.PreviewImage == null)
+                return;
+
+            try
+            {
+                var imageRect = Captue.PreviewImage.rectTransform;
+                var borderRect = previewBorder.gameObject.GetComponent<RectTransform>();
+                
+                if (imageRect != null && borderRect != null)
+                {
+                    var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
+                    var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
+
+                    float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
+                    float containerMaxWidth = 520f;
+                    
+                    float finalWidth, finalHeight;
+                    if (cropW > containerMaxWidth)
+                    {   // Scale down to fit width
+                        finalWidth = containerMaxWidth;
+                        finalHeight = finalWidth / croppedAspect;
+                    }
+                    else
+                    {   // Use original cropped dimensions
+                        finalWidth = cropW;
+                        finalHeight = cropH;
+                    }
+
+                    // Update border size to match new dimensions
+                    borderRect.sizeDelta = new Vector2(finalWidth, finalHeight);
+                    
+                    // Update image size to match but keep it centered
+                    imageRect.sizeDelta = new Vector2(finalWidth, finalHeight);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Could not update preview border size: {ex.Message}");
             }
         }
     }

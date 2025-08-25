@@ -12,13 +12,9 @@
 
     fix: when the menu is closed hiding the ui causing the preview to show when menu is still closed
 
-    add border to preview
+~~  add border to preview
 
-    changing background color then showing background still keeps the selected color
-    cant make background transparent when in space becuse it uses the custom background color
-        becuse it dosent have a atomsphere to mask the background is camera solid color
-
-    camera gets rotated
+~~  camera gets rotated
 
 Makewindow closed by defult
 

@@ -1,22 +1,27 @@
-	capture area
-
-    add 4 inputs to change capture size to capture specific area
-
+XX	capture area
+~~  add 4 inputs to change capture size to capture specific area
 ~~  add open captures folder
-
 ~~  a effect for when the capture is saved
-
 ~~  exiting to space center then entering back dosent make the menu
-
-    add auto updater
-
-    fix: when the menu is closed hiding the ui causing the preview to show when menu is still closed
-
+~~  fix: when the menu is closed hiding the ui causing the preview to show when menu is still closed
 ~~  add border to preview
-
 ~~  camera gets rotated
+~~  add show interirors button
+    add auto updater
+    dynamic camera quality is wrong it should be high quality when not moving
 
 Makewindow closed by defult
+
+UpdatePreviewRendering every update is intensive
+
+fix the stats lables its not saying any info
+
+
+
+
+
+
+
 
 
 Dynamic Quality System:

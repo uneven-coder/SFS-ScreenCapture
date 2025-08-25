@@ -175,6 +175,8 @@ namespace ScreenCapture
         // Object pool for performance-critical operations
         private static readonly System.Collections.Queue rendererListPool = new System.Collections.Queue();
 
+
+
         private static System.Collections.Generic.List<(Renderer, bool)> GetPooledRendererList()
         {
             if (rendererListPool.Count > 0)
@@ -206,17 +208,61 @@ namespace ScreenCapture
             return result;
         }
 
+        public static void CreateCompactToggle(Container parent, string label, System.Func<bool> getter, System.Action action)
+        {   // Create a small toggle control that invokes a shared action and refreshes the preview
+            // Use a compact fixed width so two toggles fit side-by-side
+            int width = 200;
+            int height = 39;
+
+            var toggle = Builder.CreateToggleWithLabel(parent, width, height, getter, () =>
+            {   // Execute the toggle action and request preview update
+                try
+                {
+                    action?.Invoke();
+                    World.OwnerInstance?.RequestPreviewUpdate();
+                }
+                catch (Exception ex)
+                {   // Log errors to help diagnose UI callback issues
+                    Debug.LogError($"Toggle '{label}' action failed: {ex.Message}");
+                }
+            }, 0, 0, label);
+
+            // Ensure the toggle visual size is reduced to half for compact layout
+            try
+            {
+                float sizeFactor = 0.85f;
+                if (toggle?.toggle != null)
+                {   // Adjust RectTransform size if available
+                    var rt = toggle?.toggle.rectTransform;
+                    if (rt != null)
+                        rt.localScale = new Vector3(sizeFactor, sizeFactor, 0f);
+                    if (toggle?.label != null)
+                    {
+                        var lrt = toggle?.label.rectTransform;
+                        if (lrt != null)
+                            // lrt.anchoredPosition = new Vector2(30f, lrt.anchoredPosition.y);
+                            // change the right side width to be bigger to reach to the reduced size toggle
+                            lrt.sizeDelta = new Vector2(lrt.sizeDelta.x * sizeFactor, lrt.sizeDelta.y);
+                        lrt.anchoredPosition = new Vector2(lrt.anchoredPosition.x * sizeFactor, lrt.anchoredPosition.y);
+                    }
+                    // else
+                    //     tgo.transform.localScale = tgo.transform.localScale * 0.5f;
+                }
+            }
+            catch (Exception ex) { Debug.LogWarning($"Failed to resize toggle: {ex.Message}"); }
+        }
+
         public static void CreateCropControls(Container parent, System.Action onCropChange)
         {
-            Builder.CreateLabel(parent, 350, 42, 0, 0, "Crop");
+            Builder.CreateLabel(parent, 390, 36, 0, 0, "Crop");
 
-            CreateNestedHorizontal(parent, 5f, null, TextAnchor.UpperRight, row1 =>
+            CreateNestedHorizontal(parent, 10f, null, TextAnchor.UpperRight, row1 =>
             {
                 CreateCropInput(row1, () => Main.CropLeft, val => { Main.CropLeft = val; onCropChange?.Invoke(); });
                 CreateCropInput(row1, () => Main.CropTop, val => { Main.CropTop = val; onCropChange?.Invoke(); });
             });
 
-            CreateNestedHorizontal(parent, 5f, null, TextAnchor.UpperRight, row2 =>
+            CreateNestedHorizontal(parent, 10f, null, TextAnchor.UpperRight, row2 =>
             {
                 CreateCropInput(row2, () => Main.CropBottom, val => { Main.CropBottom = val; onCropChange?.Invoke(); });
                 CreateCropInput(row2, () => Main.CropRight, val => { Main.CropRight = val; onCropChange?.Invoke(); });
@@ -225,7 +271,7 @@ namespace ScreenCapture
 
         private static void CreateCropInput(Container parent, System.Func<float> getValue, System.Action<float> setValue)
         {
-            Builder.CreateTextInput(parent, 180, 42, 0, 0, getValue().ToString("0"), val =>
+            Builder.CreateTextInput(parent, 200, 42, 0, 0, getValue().ToString("0"), val =>
             {
                 if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float crop))
                     setValue(Mathf.Clamp(crop, 0f, 100f));
@@ -255,6 +301,22 @@ namespace ScreenCapture
                 catch (System.Exception ex) { Debug.LogError($"Time control error: {ex.Message}"); }
             }, text);
         }
+
+    public static void ToggleInteriorView()
+    {
+        if (SFS.InteriorManager.main != null)
+        {
+            SFS.InteriorManager.main.ToggleInteriorView();
+            try
+            {
+                bool state = SFS.InteriorManager.main.interiorView.Value;
+                // Example: log or use the state however you need
+                Console.WriteLine("Interior View is now: " + state);
+            }
+            catch { }
+        }
+    }
+
 
         public static Container CreateNestedHorizontal(Container parent, float spacing, RectOffset padding, TextAnchor alignment, UIBase.ContainerContentDelegate contentCreator)
         {

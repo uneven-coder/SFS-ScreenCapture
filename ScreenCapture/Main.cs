@@ -9,6 +9,7 @@ using UnityEngine.UI;
 using SFS.UI.ModGUI;
 using UITools;
 using static ScreenCapture.Main;
+using static ScreenCapture.CaptureUtilities;
 
 namespace ScreenCapture
 {
@@ -16,13 +17,13 @@ namespace ScreenCapture
     {
         public static int PreviewWidth { get; set; } = 256;
         public static FolderPath ScreenCaptureFolder { get; private set; }
-        
+
         private static Captue s_captureInstance;
         private static int s_resolutionWidth = 1980;
         private static float s_cropLeft, s_cropTop, s_cropRight, s_cropBottom;
 
-        public static int ResolutionWidth 
-        { 
+        public static int ResolutionWidth
+        {
             get => s_resolutionWidth;
             set
             {   // Update resolution width and invalidate cache if changed
@@ -37,10 +38,10 @@ namespace ScreenCapture
         public static float PreviewZoom { get; set; } = 1f;
         public static float PreviewZoomLevel { get; set; } = 0f;
         public static float PreviewBasePivotDistance { get; set; } = 100f;
-        
-        public static float CropLeft 
-        { 
-            get => s_cropLeft; 
+
+        public static float CropLeft
+        {
+            get => s_cropLeft;
             set
             {   // Update crop left and invalidate cache if changed
                 if (s_cropLeft != value)
@@ -50,10 +51,10 @@ namespace ScreenCapture
                 }
             }
         }
-        
-        public static float CropTop 
-        { 
-            get => s_cropTop; 
+
+        public static float CropTop
+        {
+            get => s_cropTop;
             set
             {   // Update crop top and invalidate cache if changed
                 if (s_cropTop != value)
@@ -63,10 +64,10 @@ namespace ScreenCapture
                 }
             }
         }
-        
-        public static float CropRight 
-        { 
-            get => s_cropRight; 
+
+        public static float CropRight
+        {
+            get => s_cropRight;
             set
             {   // Update crop right and invalidate cache if changed
                 if (s_cropRight != value)
@@ -76,10 +77,10 @@ namespace ScreenCapture
                 }
             }
         }
-        
-        public static float CropBottom 
-        { 
-            get => s_cropBottom; 
+
+        public static float CropBottom
+        {
+            get => s_cropBottom;
             set
             {   // Update crop bottom and invalidate cache if changed
                 if (s_cropBottom != value)
@@ -98,7 +99,7 @@ namespace ScreenCapture
         public override string DisplayName => "ScreenCapture";
         public override string Author => "Cratior";
         public override string MinimumGameVersionNecessary => "1.5.10";
-        public override string ModVersion => "2.2.3";
+        public override string ModVersion => "1.4.3"; // release, updates, fixes/changes
         public override string Description => "Adds a screenshot button to the world scene, allowing you to take screenshots at custom resolutions.";
 
         public override void Load()
@@ -120,7 +121,7 @@ namespace ScreenCapture
         private void ManageUI(UnityEngine.SceneManagement.Scene scene)
         {   // Handle UI creation and destruction based on scene
             bool isWorldScene = scene.name == "World_PC";
-            
+
             if (isWorldScene)
                 HandleWorldSceneEntry();
             else
@@ -155,14 +156,12 @@ namespace ScreenCapture
             static World()
             {   // Initialize static world capture settings
                 MainCamera = GameCamerasManager.main?.world_Camera?.camera;
-                // UIHolder = Main.uiHolder;
                 wasMinimized = false;
             }
 
             public static void Awake()
             {   // Reset static state on awakening
                 MainCamera = GameCamerasManager.main?.world_Camera?.camera;
-                // UIHolder = Main.uiHolder;
                 wasMinimized = false;
             }
         }
@@ -192,15 +191,27 @@ namespace ScreenCapture
         private int lastScreenWidth;
         private int lastScreenHeight;
         private float lastPreviewUpdate;
-        
+
         // Camera tracking for preview optimization
         private Vector3 lastCameraPosition;
         private Quaternion lastCameraRotation;
-        
-        // Adaptive preview rendering
-        private float lastSignificantChange;
-        private bool isHighDetailMode = false;
-        private const float HIGH_DETAIL_TIMEOUT = 2f;
+
+        // Adaptive preview rendering with simplified quality system
+        private CameraActivity currentActivity = CameraActivity.Static;
+
+        // Debounce fields for camera quality updates
+        private CameraActivity lastAppliedActivity = CameraActivity.Static;
+        private CameraActivity lastRequestedActivity = CameraActivity.Static;
+        private float qualityDebounceDelay = 0.05f; // Reduced delay for faster quality switching
+        private float lastQualityRequestTime;
+        private bool qualityApplyScheduled = false;
+
+        // Optimized movement detection thresholds
+        private static readonly float VelocityThresholdSq = 0.01f;       // Squared velocity threshold for faster comparison
+        private static readonly float RotationVelocityThreshold = 2f;    // Increased for less sensitivity
+        private static readonly float PositionDeltaThresholdSq = 0.0001f; // Squared position change threshold
+        private static readonly float RotationDeltaThreshold = 1f;       // Increased threshold
+        private static readonly float[] UpdateIntervals = { 0.05f, 0.12f }; // Moving: 20fps, Static: 8.3fps
 
         void Awake()
         {   // Initialize camera and actions when component awakens
@@ -208,10 +219,6 @@ namespace ScreenCapture
 
             lastScreenWidth = Screen.width;
             lastScreenHeight = Screen.height;
-
-            // Initialize adaptive preview in high detail mode
-            lastSignificantChange = Time.unscaledTime;
-            isHighDetailMode = true;
 
             windowOpenedAction = () => WorldTime.main?.SetState(0.0, true, false);
             windowCollapsedAction = () => WorldTime.main?.SetState(1.0, true, false);
@@ -223,10 +230,9 @@ namespace ScreenCapture
         public void OnWindowCollapsed(Action action) =>
             windowCollapsedAction = action ?? (() => { });
 
-        public void OnSceneEntered()
-        {   // Reset state when entering world scene
+        public void OnSceneEntered() =>
             World.Awake();
-        }
+
 
         public void OnSceneExited()
         {   // Clean up state when exiting world scene and destroy UI holder
@@ -235,8 +241,6 @@ namespace ScreenCapture
                 CleanupMainWindow();
                 CleanupPreviewResources();
                 CleanupUIHolder();
-
-                Debug.Log("Scene exit cleanup completed");
             }
             catch (System.Exception ex)
             {
@@ -285,19 +289,13 @@ namespace ScreenCapture
         }
 
         public void ShowUI()
-        {   // Open the UI and ensure the main camera is ready
-            Debug.Log($"ShowUI called, mainWindow is null: {mainWindow == null}");
+        {   // helper function from main
             if (mainWindow != null)
-            {
-                Debug.Log("UI already exists, returning");
                 return;
-            }
 
-            Debug.Log("Creating new MainUI");
             mainWindow = new MainUI();
             mainWindow.Show();
-            Debug.Log("MainUI created and shown");
-            
+
             if (GameCamerasManager.main?.world_Camera?.rotation?.Value != null)
                 GameCamerasManager.main.world_Camera.rotation.OnChange += updateCameraRotation;
         }
@@ -343,7 +341,7 @@ namespace ScreenCapture
 
             bool minimized = closableWindow.Minimized;
             ref bool wasMinimized = ref Main.World.wasMinimized;
-            
+
             if (minimized != wasMinimized)
             {   // Handle window state change
                 (minimized ? windowCollapsedAction : windowOpenedAction)?.Invoke();
@@ -352,71 +350,32 @@ namespace ScreenCapture
                 mainWindow?.UpdateBackgroundWindowVisibility();
             }
 
-            // Adaptive preview updates when window is open and components are ready
-            if (!minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null && CheckForSignificantChanges())
-                UpdatePreviewRendering();
-        }
-
-        private bool CheckForSignificantChanges()
-        {   // Adaptive change detection accounting for both camera transform and world position changes
-            if (World.MainCamera == null || World.PreviewCamera == null)
-                return false;
-
-            var currentPos = World.MainCamera.transform.position;
-            var currentRot = World.MainCamera.transform.rotation;
-            
-            // Calculate both local transform changes and world position velocity
-            float positionDelta = (currentPos - lastCameraPosition).magnitude;
-            float rotationDelta = Quaternion.Angle(currentRot, lastCameraRotation);
-            
-            float currentTime = Time.unscaledTime;
-            float timeSinceLastUpdate = currentTime - lastPreviewUpdate;
-            float deltaTime = Mathf.Max(timeSinceLastUpdate, 0.001f); // Prevent division by zero
-            
-            // Calculate velocity-based activity metrics for smoother transitions
-            float positionVelocity = positionDelta / deltaTime;
-            float rotationVelocity = rotationDelta / deltaTime;
-            
-            // Classify activity based on velocity and absolute change thresholds
-            bool isHighActivity = positionVelocity > 50f || rotationVelocity > 180f || positionDelta > 5f || rotationDelta > 10f;
-            bool isMediumActivity = positionVelocity > 10f || rotationVelocity > 60f || positionDelta > 1f || rotationDelta > 5f;
-            bool isLowActivity = positionVelocity > 2f || rotationVelocity > 15f || positionDelta > 0.1f || rotationDelta > 1f;
-            bool isMinimalActivity = positionVelocity > 0.5f || rotationVelocity > 3f || positionDelta > 0.01f || rotationDelta > 0.2f;
-            
-            // Dynamic update intervals optimized for camera movement patterns
-            float updateInterval = isHighActivity ? 0.016f :    // 60 FPS for rapid movement
-                                  isMediumActivity ? 0.033f :   // 30 FPS for moderate movement
-                                  isLowActivity ? 0.1f :        // 10 FPS for slow movement
-                                  isMinimalActivity ? 0.25f :   // 4 FPS for minimal movement
-                                  0.5f;                         // 2 FPS for static camera
-            
-            // Set quality mode based on activity level
-            isHighDetailMode = !isHighActivity && !isMediumActivity;
-            
-            bool timeForUpdate = timeSinceLastUpdate >= updateInterval;
-            
-            if (timeForUpdate)
-            {   // Track significant changes and update camera state
-                if (isHighActivity || isMediumActivity || isLowActivity || isMinimalActivity)
-                    lastSignificantChange = currentTime;
-                
-                lastCameraPosition = currentPos;
-                lastCameraRotation = currentRot;
-                return true;
+            if (!minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
+            {
+                if (CheckForSignificantChanges(ref lastCameraPosition, ref lastCameraRotation, lastPreviewUpdate,
+                                               VelocityThresholdSq, RotationVelocityThreshold, PositionDeltaThresholdSq, RotationDeltaThreshold,
+                                               UpdateIntervals[0], UpdateIntervals[1], out var activity))
+                {
+                    currentActivity = activity;
+                    UpdatePreviewRendering();
+                }
             }
-            
-            return false;
+
+            // Apply any pending quality change if debounce time passed
+            // Debounced application of camera quality settings
+            if (qualityApplyScheduled && Time.unscaledTime - lastQualityRequestTime >= qualityDebounceDelay)
+                ApplyCameraQualitySettingsImmediate();
         }
+
+
+
+
 
         public void RequestPreviewUpdate()
-        {   // Public method to request preview update from UI components with high detail mode
-            if (closableWindow != null && !closableWindow.Minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
-            {
-                // Force high detail mode for manual updates
-                lastSignificantChange = Time.unscaledTime;
-                isHighDetailMode = true;
-                UpdatePreviewRendering();
-            }
+        {   // Public method to request preview update from UI components
+            if (closableWindow != null && !closableWindow.Minimized &&
+                PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
+            { /* Intentionally minimal: next Update will handle refresh */ }
         }
 
         private void CheckForScreenSizeChange()
@@ -425,78 +384,139 @@ namespace ScreenCapture
             {
                 lastScreenWidth = Screen.width;
                 lastScreenHeight = Screen.height;
-                
+
                 try
-                {
-                    OnScreenSizeChanged?.Invoke();
-                }
+                { OnScreenSizeChanged?.Invoke(); }
                 catch (System.Exception ex)
-                {
-                    Debug.LogWarning($"Error in screen size change handler: {ex.Message}");
-                }
+                { Debug.LogWarning($"Error in screen size change handler: {ex.Message}"); }
             }
         }
 
         private void UpdatePreviewRendering()
-        {   // Adaptive preview rendering with dynamic resolution based on activity level
-            bool screenSizeChanged = CacheManager.IsScreenSizeChanged();
-            
-            // Determine appropriate preview resolution based on activity level and detail mode
-            int targetPreviewWidth = isHighDetailMode ? 1024 : 128; // More aggressive quality scaling
-            bool needsResolutionChange = Captue.PreviewRT == null || 
-                                       !Captue.PreviewRT.IsCreated() || 
-                                       Math.Abs(Captue.PreviewRT.width - CaptureUtilities.CalculateTargetRTWidth(targetPreviewWidth)) > 50;
+        {   // Delegate to UI system which handles proper PREVIEW_SCALE_FIX scaling and cropping
+            EnsureAdaptivePreviewRT();
+            ApplyCameraQualitySettings(); // Schedule camera quality update (debounced)
+            mainWindow?.RequestPreviewUpdate();
+            lastPreviewUpdate = Time.unscaledTime;
+        }
 
-            if (screenSizeChanged || needsResolutionChange)
-            {   // Recreate render texture with appropriate resolution
-                LastScreenWidth = Screen.width;
-                LastScreenHeight = Screen.height;
+        private void EnsureAdaptivePreviewRT()
+        {   // Adjust preview RenderTexture size and filtering based on activity
+            try
+            {
+                if (PreviewImage == null)
+                    return;
 
-                if (Captue.PreviewRT != null)
-                {
-                    Captue.PreviewRT.Release();
-                    UnityEngine.Object.Destroy(Captue.PreviewRT);
+                int targetResolution;
+                FilterMode filter;
+                int antiAliasing;
+
+                if (currentActivity == CameraActivity.Moving)
+                {   // Low quality for moving
+                    targetResolution = 128;
+                    filter = FilterMode.Point;
+                    antiAliasing = 1;
+                }
+                else
+                {   // High quality for static
+                    targetResolution = 1024;
+                    filter = FilterMode.Bilinear;
+                    antiAliasing = 4;
                 }
 
-                PreviewWidth = targetPreviewWidth;
-                Captue.PreviewRT = CaptureUtilities.CreatePreviewRenderTexture(targetPreviewWidth);
-                
-                if (Captue.PreviewImage != null)
-                {
-                    Captue.PreviewImage.texture = Captue.PreviewRT;
-                    var rect = Captue.PreviewImage.GetComponent<RectTransform>();
-                    var (finalWidth, finalHeight) = CaptureUtilities.CalculatePreviewDimensions();
-                    rect.sizeDelta = new Vector2(finalWidth, finalHeight);
-                    
-                    if (CropLeft > 0 || CropTop > 0 || CropRight > 0 || CropBottom > 0)
-                        CaptureUtilities.UpdatePreviewCropping();
+                // Calculate aspect-correct dimensions from target resolution
+                float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
+                int targetW, targetH;
+
+                if (screenAspect >= 1f)
+                {   // Landscape: width = target, height derived from aspect
+                    targetW = targetResolution;
+                    targetH = Mathf.Max(64, Mathf.RoundToInt(targetResolution / screenAspect));
                 }
+                else
+                {   // Portrait: height = target, width derived from aspect
+                    targetH = targetResolution;
+                    targetW = Mathf.Max(64, Mathf.RoundToInt(targetResolution * screenAspect));
+                }
+
+                // Check if RenderTexture needs recreation
+                bool needsRecreation = PreviewRT == null ||
+                                        PreviewRT.width != targetW ||
+                                        PreviewRT.height != targetH ||
+                                        PreviewRT.antiAliasing != antiAliasing ||
+                                        PreviewRT.filterMode != filter;
+
+                if (!needsRecreation)
+                    return;
+
+                if (PreviewRT != null)
+                {
+                    PreviewRT.Release();
+                    UnityEngine.Object.Destroy(PreviewRT);
+                    PreviewRT = null;
+                }
+
+                var rt = new RenderTexture(targetW, targetH, 24, RenderTextureFormat.ARGB32)
+                {
+                    antiAliasing = antiAliasing,
+                    filterMode = filter
+                };
+                rt.Create();
+                PreviewRT = rt;
+
+                if (PreviewImage != null)
+                    PreviewImage.texture = PreviewRT;
 
                 if (World.PreviewCamera != null)
-                    World.PreviewCamera.targetTexture = Captue.PreviewRT;
+                    World.PreviewCamera.targetTexture = PreviewRT;
             }
+            catch (System.Exception ex)
+            { Debug.LogWarning($"Adaptive RT setup failed: {ex.Message}"); }
+        }
 
-            lastPreviewUpdate = Time.unscaledTime;
+        private void ApplyCameraQualitySettings()
+        {   // Schedule camera quality changes using debounce to avoid redundant rapid updates
+            if (World.PreviewCamera == null)
+                return;
 
-            if (World.PreviewCamera != null && Captue.PreviewRT != null)
-            {   // Render preview with current visibility settings
-                World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(showBackground);
-                World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
-                World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
-                CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
+            // If activity hasn't changed and there's no pending update, do nothing
+            if (currentActivity == lastAppliedActivity && !qualityApplyScheduled)
+                return;
 
-                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(showBackground, showTerrain, HiddenRockets);
-                var prevTarget = World.PreviewCamera.targetTexture;
+            // Record requested activity and reset debounce timer
+            lastRequestedActivity = currentActivity;
+            lastQualityRequestTime = Time.unscaledTime;
+            qualityApplyScheduled = true;
+        }
 
-                if (CropLeft > 0 || CropTop > 0 || CropRight > 0 || CropBottom > 0 && screenSizeChanged && mainWindow != null)
-                    mainWindow.RefreshLayoutForCroppedPreview();
+        private void ApplyCameraQualitySettingsImmediate()
+        {   // Immediately apply camera rendering quality settings (called after debounce)
+            if (World.PreviewCamera == null)
+                return;
 
-                World.PreviewCamera.targetTexture = Captue.PreviewRT;
-                World.PreviewCamera.Render();
-                World.PreviewCamera.targetTexture = prevTarget;
+            try
+            {
+                bool isHighQuality = lastRequestedActivity == CameraActivity.Static;
 
-                CaptureUtilities.RestoreSceneVisibility(modified);
+                if (isHighQuality)
+                {   // High quality settings for static preview
+                    World.PreviewCamera.renderingPath = RenderingPath.DeferredShading;
+                    World.PreviewCamera.allowHDR = true;
+                    World.PreviewCamera.allowMSAA = true;
+                }
+                else
+                {   // Low quality settings for movement
+                    World.PreviewCamera.renderingPath = RenderingPath.Forward;
+                    World.PreviewCamera.allowHDR = false;
+                    World.PreviewCamera.allowMSAA = false;
+                }
+
+                // Update tracking state
+                lastAppliedActivity = lastRequestedActivity;
+                qualityApplyScheduled = false;
             }
+            catch (System.Exception ex)
+            { Debug.LogWarning($"Camera quality settings failed: {ex.Message}"); }
         }
     }
 }

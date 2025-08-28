@@ -51,25 +51,16 @@ namespace ScreenCapture
         private Box previewBorder;
 
         // Fix for RawImage appearing too large in UI: scale down displayed preview by this factor
-        private const float PREVIEW_SCALE_FIX = 0.5f; // Display preview at 50% to match border
+        private const float PREVIEW_SCALE_FIX = 1.0f; // Use 1.0f to prevent scaling issues
 
         private void OnResolutionInputChange(string val)
-        {   // Optimized resolution input validation with crop factor consideration
+        {   // Optimized resolution input validation using normalized crop factors
             if (!int.TryParse(val, out int targetWidth))
                 return;
 
-            float leftCrop = CropLeft / 100f;
-            float rightCrop = CropRight / 100f;
-            float totalHorizontal = leftCrop + rightCrop;
-
-            if (totalHorizontal >= 1f)
-            {
-                float scale = 0.99f / totalHorizontal;
-                leftCrop *= scale;
-                rightCrop *= scale;
-            }
-
+            var (leftCrop, _, rightCrop, _) = CaptureUtilities.GetNormalizedCropValues();
             float cropWidthFactor = 1f - leftCrop - rightCrop;
+
             int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
             int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
 
@@ -128,7 +119,7 @@ namespace ScreenCapture
                 prevOpen?.Invoke();
                 EnsurePreviewSetup();
                 UpdateEstimatesUI();
-                World.OwnerInstance?.RequestPreviewUpdate();
+                RequestPreviewUpdate();  // Use local method instead of owner method
                 Debug.Log("Window opened action triggered");
             };
 
@@ -233,7 +224,7 @@ namespace ScreenCapture
                             CaptureUtilities.UpdatePreviewCropping();
                             RefreshLayoutForCroppedPreview();
                             UpdateEstimatesUI();
-                            World.OwnerInstance?.RequestPreviewUpdate();
+                            RequestPreviewUpdate();  // Use local method instead of owner method
                         });
                     });
                 });
@@ -304,7 +295,7 @@ namespace ScreenCapture
             {   // Set zoom and update level based on factor with preview refresh
                 PreviewZoom = z;
                 PreviewZoomLevel = Mathf.Log(z);
-                World.OwnerInstance?.RequestPreviewUpdate();
+                RequestPreviewUpdate();  // Use local method instead of owner method
             }
 
             float StepInLog(float z, int dir)
@@ -329,7 +320,7 @@ namespace ScreenCapture
                     PreviewZoomLevel = lvl;
                     zoomInput.textInput.Text = $"{GetLevel():0.00}";
                     UpdateEstimatesUI();
-                    World.OwnerInstance?.RequestPreviewUpdate();
+                    RequestPreviewUpdate();  // Use local method instead of owner method
                 }
             });
 
@@ -442,6 +433,10 @@ namespace ScreenCapture
             {
                 // Simple single-pass preview setup
                 SetupPreview(previewContainer);
+                
+                // Immediately apply proper scaling and update after setup
+                RequestPreviewUpdate();
+                
                 Debug.Log("Preview setup completed successfully");
             }
             catch (Exception ex)
@@ -451,7 +446,7 @@ namespace ScreenCapture
         }
 
         public void UpdateEstimatesUI()
-        {   // Refresh estimate labels with aggressive throttling and caching optimization
+        {   // Refresh estimate labels with aggressive throttling and normalized crop usage
             ref Captue ownerRef = ref World.OwnerInstance;
             if (ownerRef == null)
                 return;
@@ -471,33 +466,11 @@ namespace ScreenCapture
             lastUpdateTime = currentTime;
             lastEstimateWidth = ResolutionWidth;
 
-            // Calculate crop factors to determine render requirements
-            float leftCrop = CropLeft / 100f;
-            float topCrop = CropTop / 100f;
-            float rightCrop = CropRight / 100f;
-            float bottomCrop = CropBottom / 100f;
-
-            float totalHorizontal = leftCrop + rightCrop;
-            float totalVertical = topCrop + bottomCrop;
-
-            if (totalHorizontal >= 1f)
-            {
-                float scale = 0.99f / totalHorizontal;
-                leftCrop *= scale;
-                rightCrop *= scale;
-            }
-
-            if (totalVertical >= 1f)
-            {
-                float scale = 0.99f / totalVertical;
-                topCrop *= scale;
-                bottomCrop *= scale;
-            }
+            var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
 
             float cropWidthFactor = 1f - leftCrop - rightCrop;
             float cropHeightFactor = 1f - topCrop - bottomCrop;
 
-            // Calculate render dimensions needed for the target resolution
             int targetWidth = ResolutionWidth;
             int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
             int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
@@ -528,6 +501,36 @@ namespace ScreenCapture
             resLabel.Color = (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok);
 
             SetTextInputColor(resInput, (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok));
+        }
+
+        public void RequestPreviewUpdate()
+        {   // Request preview update without viewport cropping to prevent stretching
+            if (World.PreviewCamera == null || Captue.PreviewRT == null)
+                return;
+
+            ref Captue owner = ref World.OwnerInstance;
+            if (owner == null)
+                return;
+
+            World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
+            World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
+            World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
+            CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
+
+            var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
+            var prevTarget = World.PreviewCamera.targetTexture;
+
+            // Render full scene without viewport manipulation to prevent stretching
+            World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
+            World.PreviewCamera.targetTexture = Captue.PreviewRT;
+            World.PreviewCamera.Render();
+            World.PreviewCamera.targetTexture = prevTarget;
+
+            CaptureUtilities.RestoreSceneVisibility(modified);
+
+            // Update UI layout to reflect current crop settings
+            if (Captue.PreviewImage != null)
+                UpdatePreviewBorderSize();
         }
 
         private void OnScreenSizeChanged()
@@ -561,8 +564,9 @@ namespace ScreenCapture
             // Update estimates to reflect new screen dimensions
             UpdateEstimatesUI();
 
-            // Refresh preview layout for new screen size
+            // Refresh preview layout for new screen size and trigger update
             RefreshLayoutForCroppedPreview();
+            RequestPreviewUpdate();
         }
 
         public override void Refresh()
@@ -684,7 +688,7 @@ namespace ScreenCapture
         }
 
         public void TakeScreenshot()
-        {   // Capture and save a screenshot at the specified resolution and show result animation
+        {   // Capture and save a screenshot at the specified resolution and show result animation using normalized crop values
             ref Captue owner = ref World.OwnerInstance;
             if (owner == null) return;
 
@@ -693,69 +697,45 @@ namespace ScreenCapture
                 if (GameCamerasManager.main != null && GameCamerasManager.main.world_Camera != null)
                     World.MainCamera = GameCamerasManager.main.world_Camera.camera;
                 else
-                {
+                {   // Camera unavailable, abort and animate failure
                     UnityEngine.Debug.LogError("Cannot take screenshot: Camera not available");
                     StartWindowColorAnimation(false);
                     return;
                 }
             }
 
-            // Calculate crop factors
-            float leftCrop = CropLeft / 100f;
-            float topCrop = CropTop / 100f;
-            float rightCrop = CropRight / 100f;
-            float bottomCrop = CropBottom / 100f;
+            var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
 
-            // Ensure total crop doesn't exceed 100%
-            float totalHorizontal = leftCrop + rightCrop;
-            float totalVertical = topCrop + bottomCrop;
-
-            if (totalHorizontal >= 1f)
-            {
-                float scale = 0.99f / totalHorizontal;
-                leftCrop *= scale;
-                rightCrop *= scale;
-            }
-
-            if (totalVertical >= 1f)
-            {
-                float scale = 0.99f / totalVertical;
-                topCrop *= scale;
-                bottomCrop *= scale;
-            }
-
-            // Calculate the render dimensions to achieve target resolution for cropped area
             float cropWidthFactor = 1f - leftCrop - rightCrop;
             float cropHeightFactor = 1f - topCrop - bottomCrop;
 
             int targetWidth = ResolutionWidth;
             int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
 
+            // Render at full scene resolution needed to support cropped target at requested size
             int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
             int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
 
-            // Check against texture limits and memory budgets using render dimensions
             int maxTextureSize = SystemInfo.maxTextureSize;
             var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
             var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
 
             if (renderWidth > maxTextureSize || renderHeight > maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
-            {
-                // Calculate maximum safe render dimensions accounting for crop
+            {   // Clamp to safe render dimensions accounting for crop
                 int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
                 int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
 
                 var (ow, oh) = (targetWidth, targetHeight);
                 targetWidth = maxSafeTargetWidth;
                 targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
-                renderWidth = Mathf.RoundToInt(targetWidth / cropWidthFactor);
-                renderHeight = Mathf.RoundToInt(targetHeight / cropHeightFactor);
+                renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
+                renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
 
                 Debug.LogWarning($"Requested {ow}x{oh} exceeds safe limits with current crop settings. Using {targetWidth}x{targetHeight} (render {renderWidth}x{renderHeight}).");
             }
 
-            RenderTexture renderTexture = null;
-            Texture2D screenshotTexture = null;
+            RenderTexture fullRT = null;
+            Texture2D finalTex = null;
             int previousAntiAliasing = QualitySettings.antiAliasing;
             bool previousOrthographic = World.MainCamera.orthographic;
             float previousOrthographicSize = World.MainCamera.orthographicSize;
@@ -765,16 +745,16 @@ namespace ScreenCapture
             Vector3 previousPosition = World.MainCamera.transform.position;
 
             try
-            {
-                renderTexture = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
-                screenshotTexture = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
+            {   // Render the full scene to RT, then read the cropped rectangle into final texture
+                fullRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
+                finalTex = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
 
                 float z = Mathf.Max(Mathf.Exp(PreviewZoomLevel), 1e-6f);
 
                 if (World.MainCamera.orthographic)
                     World.MainCamera.orthographicSize = Mathf.Clamp(previousOrthographicSize / z, 1e-6f, 1_000_000f);
                 else
-                {   // Perspective: use FOV when in range, otherwise dolly relative to a forward pivot
+                {   // Perspective: use FOV or dolly when out of bounds
                     float baseFov = Mathf.Clamp(previousFieldOfView, 5f, 120f);
                     float rawFov = baseFov / z;
 
@@ -809,9 +789,9 @@ namespace ScreenCapture
 
                 var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
 
-                // Set camera viewport to capture only the cropped area
-                World.MainCamera.rect = new Rect(leftCrop, bottomCrop, 1f - leftCrop - rightCrop, 1f - topCrop - bottomCrop);
-                World.MainCamera.targetTexture = renderTexture;
+                // Render full scene (no viewport cropping) then crop via ReadPixels
+                World.MainCamera.rect = new Rect(0, 0, 1, 1);
+                World.MainCamera.targetTexture = fullRT;
                 World.MainCamera.Render();
 
                 CaptureUtilities.RestoreSceneVisibility(modified);
@@ -819,13 +799,31 @@ namespace ScreenCapture
                 World.MainCamera.clearFlags = prevClearFlags;
                 World.MainCamera.backgroundColor = prevBgColor;
 
-                RenderTexture.active = renderTexture;
+                // Compute cropped read rect in fullRT pixel space
+                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
 
-                // Read the full render texture since we've already cropped at the viewport level
-                screenshotTexture.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
-                screenshotTexture.Apply();
+                // Read the cropped area into a temporary texture, then scale into finalTex if needed
+                var cropTex = new Texture2D((int)readRect.width, (int)readRect.height, TextureFormat.RGBA32, false);
+                RenderTexture.active = fullRT;
+                cropTex.ReadPixels(readRect, 0, 0);
+                cropTex.Apply();
 
-                byte[] pngBytes = screenshotTexture.EncodeToPNG();
+                // If cropTex size differs from target, resample; else assign directly
+                if (cropTex.width != targetWidth || cropTex.height != targetHeight)
+                {   // Scale cropped texture to target dimensions
+                    var rtScale = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
+                    Graphics.Blit(cropTex, rtScale);
+                    RenderTexture.active = rtScale;
+                    finalTex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
+                    finalTex.Apply();
+                    RenderTexture.ReleaseTemporary(rtScale);
+                }
+                else
+                {
+                    finalTex = cropTex; // Same size, reuse
+                }
+
+                byte[] pngBytes = finalTex.EncodeToPNG();
 
                 string worldName = (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
                 string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
@@ -866,11 +864,11 @@ namespace ScreenCapture
                 World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 QualitySettings.antiAliasing = previousAntiAliasing;
 
-                if (renderTexture != null)
-                    UnityEngine.Object.Destroy(renderTexture);
+                if (fullRT != null)
+                    UnityEngine.Object.Destroy(fullRT);
 
-                if (screenshotTexture != null)
-                    UnityEngine.Object.Destroy(screenshotTexture);
+                if (finalTex != null)
+                    UnityEngine.Object.Destroy(finalTex);
             }
         }
 
@@ -1016,7 +1014,7 @@ namespace ScreenCapture
         }
 
         private void UpdatePreviewBorderSize()
-        {   // Ensure border and preview image match the cropped dimensions exactly
+        {   // Calculate border size and UV mapping with normalized side cropping and no position offset
             if (previewContainer == null || Captue.PreviewImage == null || previewBorder == null)
                 return;
 
@@ -1027,56 +1025,66 @@ namespace ScreenCapture
                 if (imageRect == null || borderRect == null)
                     return;
 
-                // Get cropped dimensions
+                // Get base preview dimensions then apply normalized crop factors
                 var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
-                var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
+                var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
 
-                // Compute final size using container width clamp while preserving aspect
+                float remainingWidthFactor = 1f - leftCrop - rightCrop;
+                float remainingHeightFactor = 1f - topCrop - bottomCrop;
+
+                int croppedWidth = Mathf.RoundToInt(origW * remainingWidthFactor);
+                int croppedHeight = Mathf.RoundToInt(origH * remainingHeightFactor);
+
                 float containerMaxWidth = 520f;
-                float finalWidth = cropW > containerMaxWidth ? containerMaxWidth : cropW;
-                float finalHeight = cropW > 0 ? finalWidth * ((float)cropH / (float)cropW) : cropH;
+                float aspectRatio = croppedHeight > 0 ? (float)croppedWidth / (float)croppedHeight : 1f;
 
-                // If cropW was below clamp, keep exact height
-                if (cropW <= containerMaxWidth)
-                    finalHeight = cropH;
+                float finalWidth, finalHeight;
+                if (croppedWidth > containerMaxWidth)
+                {   // Scale down proportionally to fit container
+                    finalWidth = containerMaxWidth;
+                    finalHeight = finalWidth / Mathf.Max(1e-6f, aspectRatio);
+                }
+                else
+                {   // Use actual cropped dimensions with no minimums to avoid pixel stretching
+                    finalWidth = Mathf.Max(1f, croppedWidth);
+                    finalHeight = Mathf.Max(1f, croppedHeight);
+                }
 
-                // Enforce minimum visibility size
-                finalWidth = Mathf.Max(finalWidth, 200f);
-                finalHeight = Mathf.Max(finalHeight, 120f);
-
-                // Apply size to border
                 borderRect.sizeDelta = new Vector2(finalWidth, finalHeight);
 
-                // Ensure image is a child of the border and reset transforms so it fills exactly
                 imageRect.transform.SetParent(borderRect.gameObject.transform, false);
-                imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
+                imageRect.localScale = Vector3.one;
                 imageRect.anchorMin = Vector2.zero;
                 imageRect.anchorMax = Vector2.one;
                 imageRect.pivot = new Vector2(0.5f, 0.5f);
                 imageRect.anchoredPosition = Vector2.zero;
-                imageRect.sizeDelta = Vector2.zero;  // stretch to fill border
+                imageRect.sizeDelta = Vector2.zero;
 
-                // Reset UV and ensure texture is the preview render texture
-                try { Captue.PreviewImage.uvRect = new Rect(0f, 0f, 1f, 1f); } catch { }
+                // UV cropping directly from normalized values
+                float uvLeft = leftCrop;
+                float uvBottom = bottomCrop;
+                float uvWidth = remainingWidthFactor;
+                float uvHeight = remainingHeightFactor;
+
+                // Safety clamp to texture bounds
+                if (uvLeft + uvWidth > 1f) uvWidth = 1f - uvLeft;
+                if (uvBottom + uvHeight > 1f) uvHeight = 1f - uvBottom;
+
+                try { Captue.PreviewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); } catch { }
+
                 if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
                     Captue.PreviewImage.texture = Captue.PreviewRT;
 
-                // Ensure the RawImage does not preserve aspect (so it fills border exactly)
-                // RawImage has no 'preserveAspect' property. Ensure UVs and transform enforce fill instead.
-                try { Captue.PreviewImage.uvRect = new Rect(0f, 0f, 1f, 1f); } catch { }
-
-                // Ensure clipping mask exists
                 var mask = borderRect.GetComponent<RectMask2D>() ?? borderRect.gameObject.AddComponent<RectMask2D>();
 
-                // Update parent layout
                 var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
                 parentLayout.preferredHeight = finalHeight + 12f;
                 parentLayout.minHeight = finalHeight + 12f;
 
-                Debug.Log($"Updated preview: Border={finalWidth}x{finalHeight}, Cropped={cropW}x{cropH}");
+                Debug.Log($"Updated preview: Border={finalWidth}x{finalHeight}, UV=({uvLeft:F3},{uvBottom:F3},{uvWidth:F3},{uvHeight:F3}), Crops=L{CropLeft}%T{CropTop}%R{CropRight}%B{CropBottom}%");
             }
             catch (Exception ex)
-            {
+            {   // Log but prevent UI errors from bubbling up
                 Debug.LogWarning($"Could not update preview border size: {ex.Message}");
             }
         }
@@ -1100,13 +1108,9 @@ namespace ScreenCapture
             var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
             var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
             
-            // No artificial scaling - use exact cropped dimensions
+            // Use exact cropped dimensions without artificial scaling or minimum constraints
             int borderWidth = cropW;
             int borderHeight = cropH;
-            
-            // Set minimum size only to ensure visibility
-            borderWidth = Mathf.Max(borderWidth, 200);
-            borderHeight = Mathf.Max(borderHeight, 120);
 
             // Create properly sized border box
             previewBorder = Builder.CreateBox(parent, borderWidth, borderHeight, 0, 0, 0.2f);

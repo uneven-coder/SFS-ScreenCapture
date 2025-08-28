@@ -169,7 +169,7 @@ namespace ScreenCapture
     }
     public static class CaptureUtilities
     {
-        private static readonly System.Collections.Generic.Dictionary<string, (int width, int height)> elementSizeCache = 
+        private static readonly System.Collections.Generic.Dictionary<string, (int width, int height)> elementSizeCache =
             new System.Collections.Generic.Dictionary<string, (int, int)>(64); // Preallocate capacity
 
         // Object pool for performance-critical operations
@@ -217,7 +217,7 @@ namespace ScreenCapture
 
         public static bool PreviewInteriorVisible
         {
-            get 
+            get
             {
                 try
                 {
@@ -228,7 +228,7 @@ namespace ScreenCapture
                 catch { }
                 return true; // Default to visible if InteriorManager not available
             }
-            set 
+            set
             {
                 try
                 {
@@ -279,10 +279,10 @@ namespace ScreenCapture
                         Debug.Log($"Found interior layer '{lname}' at index {i}");
                     }
                 }
-                
+
                 if (cachedInteriorLayerMask == 0)
                     Debug.Log("No interior layers found by name. Checking for 'Interior' layer specifically...");
-                
+
                 // Try specific interior layer names that might be used
                 string[] interiorLayerNames = { "Interior", "Interiors", "interior", "interiors" };
                 foreach (var layerName in interiorLayerNames)
@@ -294,13 +294,13 @@ namespace ScreenCapture
                         Debug.Log($"Found interior layer '{layerName}' at index {layerIndex}");
                     }
                 }
-                
+
                 Debug.Log($"Interior layer mask: {cachedInteriorLayerMask} (binary: {Convert.ToString(cachedInteriorLayerMask, 2)})");
             }
-            catch (Exception ex) 
-            { 
+            catch (Exception ex)
+            {
                 Debug.LogWarning($"Error detecting interior layers: {ex.Message}");
-                cachedInteriorLayerMask = 0; 
+                cachedInteriorLayerMask = 0;
             }
 
             return cachedInteriorLayerMask;
@@ -315,7 +315,7 @@ namespace ScreenCapture
             width = Mathf.Max(16, width);
             int height = Mathf.RoundToInt((float)width / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
             var result = (width, Mathf.Max(16, height));
-            
+
             elementSizeCache[cacheKey] = result;
             return result;
         }
@@ -383,10 +383,14 @@ namespace ScreenCapture
 
         private static void CreateCropInput(Container parent, System.Func<float> getValue, System.Action<float> setValue)
         {
-            Builder.CreateTextInput(parent, 200, 42, 0, 0, getValue().ToString("0"), val =>
+            Builder.CreateTextInput(parent, 200, 42, 0, 0, Mathf.Clamp(getValue(), 0f, 100f).ToString("0"), val =>
             {
                 if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float crop))
-                    setValue(Mathf.Clamp(crop, 0f, 100f));
+                {
+                    // Clamp input values to 0-100 range at input level
+                    float clampedCrop = Mathf.Clamp(crop, 0f, 100f);
+                    setValue(clampedCrop);
+                }
             });
         }
 
@@ -432,7 +436,7 @@ namespace ScreenCapture
             {
                 Debug.LogWarning($"Failed to toggle interior visibility: {ex.Message}");
             }
-            
+
             // Request preview refresh if available
             World.OwnerInstance?.RequestPreviewUpdate();
         }
@@ -496,16 +500,18 @@ namespace ScreenCapture
 
         public static RenderTexture CreatePreviewRenderTexture(int previewWidth, int antiAliasing = 1)
         {
-            float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
-            int rtHeight = Mathf.RoundToInt(previewWidth / Mathf.Max(1e-6f, screenAspect));
+            // Match the RenderTexture to the dynamic preview container size to avoid stretching
+            var (finalWidth, finalHeight) = CalculatePreviewDimensions();
+            int rtWidth = Mathf.Max(1, finalWidth);
+            int rtHeight = Mathf.Max(1, finalHeight);
 
-            var rt = new RenderTexture(previewWidth, rtHeight, 24, RenderTextureFormat.ARGB32)
+            var rt = new RenderTexture(rtWidth, rtHeight, 24, RenderTextureFormat.ARGB32)
             {
                 antiAliasing = Mathf.Clamp(antiAliasing, 1, 8),
                 filterMode = antiAliasing > 1 ? FilterMode.Trilinear : FilterMode.Bilinear
             };
 
-            if (!rt.IsCreated()) 
+            if (!rt.IsCreated())
                 rt.Create();
             return rt;
         }
@@ -664,7 +670,7 @@ namespace ScreenCapture
             Captue.PreviewImage.texture = Captue.PreviewRT;
 
             World.PreviewCamera = SetupPreviewCamera(World.MainCamera, Captue.PreviewRT, World.PreviewCamera);
-            
+
             // Initial render with proper visibility settings
             if (World.OwnerInstance != null)
                 World.OwnerInstance.RequestPreviewUpdate();
@@ -690,6 +696,7 @@ namespace ScreenCapture
                 UnityEngine.Object.Destroy(Captue.PreviewRT);
             }
 
+            // Create RT sized to current preview container dimensions
             Captue.PreviewRT = CreatePreviewRenderTexture(Main.PreviewWidth);
             if (!Captue.PreviewRT.IsCreated())
                 Captue.PreviewRT.Create();
@@ -734,7 +741,7 @@ namespace ScreenCapture
         public static void ShowHideWindow<T>(ref T windowInstance, System.Action showAction, System.Action hideAction) where T : UIBase, new()
         {
             if (windowInstance == null) windowInstance = new T();
-            
+
             if (!windowInstance.IsOpen) windowInstance.Show(); else windowInstance.Hide();
         }
 
@@ -744,7 +751,7 @@ namespace ScreenCapture
         public static void SetRocketVisible(Rocket rocket, bool visible)
         {
             if (rocket == null) return;
-            
+
             if (visible) Main.HiddenRockets.Remove(rocket); else Main.HiddenRockets.Add(rocket);
         }
 
@@ -783,7 +790,7 @@ namespace ScreenCapture
             RefreshRenderTextureIfNeeded(origW, origH);
         }
 
-        private static (float left, float top, float right, float bottom) GetNormalizedCropValues()
+        public static (float left, float top, float right, float bottom) GetNormalizedCropValues()
         {
             float left = Mathf.Clamp01(Main.CropLeft / 100f);
             float top = Mathf.Clamp01(Main.CropTop / 100f);
@@ -792,18 +799,18 @@ namespace ScreenCapture
 
             float totalH = left + right;
             float totalV = top + bottom;
-            
+
             if (totalH >= 1f)
             {
-                float s = 0.99f / totalH; 
-                left *= s; 
+                float s = 0.99f / totalH;
+                left *= s;
                 right *= s;
             }
-            
+
             if (totalV >= 1f)
             {
-                float s = 0.99f / totalV; 
-                top *= s; 
+                float s = 0.99f / totalV;
+                top *= s;
                 bottom *= s;
             }
 
@@ -814,10 +821,10 @@ namespace ScreenCapture
         {
             float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
             const float containerMaxWidth = 520f;
-            
+
             float finalWidth = cropW > containerMaxWidth ? containerMaxWidth : cropW;
             float finalHeight = finalWidth / croppedAspect;
-            
+
             if (Captue.PreviewImage.rectTransform != null)
                 Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
 
@@ -841,7 +848,7 @@ namespace ScreenCapture
 
         private static void RefreshRenderTextureIfNeeded(int width, int height)
         {
-            if (Captue.PreviewRT == null || !Captue.PreviewRT.IsCreated() || 
+            if (Captue.PreviewRT == null || !Captue.PreviewRT.IsCreated() ||
                 Captue.PreviewRT.width != width || Captue.PreviewRT.height != height)
             {
                 if (Captue.PreviewRT != null)
@@ -862,9 +869,9 @@ namespace ScreenCapture
         {
             if (camera == null)
                 return;
-                
+
             var (left, top, right, bottom) = GetNormalizedCropValues();
-            
+
             camera.rect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom);
         }
 
@@ -874,28 +881,75 @@ namespace ScreenCapture
         public static (int width, int height) GetCroppedResolutionUncached(int originalWidth, int originalHeight)
         {
             var (left, top, right, bottom) = GetNormalizedCropValues();
-            
+
             int croppedWidth = Mathf.RoundToInt(originalWidth * (1f - left - right));
             int croppedHeight = Mathf.RoundToInt(originalHeight * (1f - top - bottom));
-            
+
             return (Mathf.Max(1, croppedWidth), Mathf.Max(1, croppedHeight));
         }
 
         public static Rect GetCroppedReadRect(int renderWidth, int renderHeight)
         {
             var (left, top, right, bottom) = GetNormalizedCropValues();
-            
+
             int leftPixels = Mathf.RoundToInt(left * renderWidth);
             int rightPixels = Mathf.RoundToInt(right * renderWidth);
             int topPixels = Mathf.RoundToInt(top * renderHeight);
             int bottomPixels = Mathf.RoundToInt(bottom * renderHeight);
-            
+
             int croppedWidth = Mathf.Max(1, renderWidth - leftPixels - rightPixels);
             int croppedHeight = Mathf.Max(1, renderHeight - topPixels - bottomPixels);
-            
+
             return new Rect(leftPixels, bottomPixels, croppedWidth, croppedHeight);
         }
+        
+        public static bool CheckForSignificantChanges(ref Vector3 lastCameraPosition, ref Quaternion lastCameraRotation, float lastPreviewUpdate,
+                                                      float velocityThresholdSq, float rotationVelocityThreshold, float positionDeltaThresholdSq, float rotationDeltaThreshold,
+                                                      float movingInterval, float staticInterval, out CameraActivity activity)
+        {   // Compute camera activity state and decide if a preview update is due
+            activity = CameraActivity.Static;
+
+            if (World.MainCamera?.transform == null || World.PreviewCamera == null)
+                return false;
+
+            var currentTransform = World.MainCamera.transform;
+            float currentTime = Time.unscaledTime;
+            float timeSinceLastUpdate = currentTime - lastPreviewUpdate;
+            float deltaTime = Mathf.Max(timeSinceLastUpdate, 0.001f);
+
+            Vector3 positionDelta = currentTransform.position - lastCameraPosition;
+            float positionDeltaSq = positionDelta.sqrMagnitude;
+            float rotationDelta = Quaternion.Angle(currentTransform.rotation, lastCameraRotation);
+
+            float positionVelocitySq = positionDeltaSq / (deltaTime * deltaTime);
+            float rotationVelocity = rotationDelta / deltaTime;
+
+            bool isMoving = positionVelocitySq > velocityThresholdSq ||
+                            rotationVelocity > rotationVelocityThreshold ||
+                            positionDeltaSq > positionDeltaThresholdSq ||
+                            rotationDelta > rotationDeltaThreshold;
+
+            activity = isMoving ? CameraActivity.Moving : CameraActivity.Static;
+
+            float updateInterval = activity == CameraActivity.Moving ? movingInterval : staticInterval;
+            bool timeForUpdate = timeSinceLastUpdate >= updateInterval;
+
+            if (timeForUpdate)
+            {   // Update tracking state
+                lastCameraPosition = currentTransform.position;
+                lastCameraRotation = currentTransform.rotation;
+                return true;
+            }
+
+            return false;
+        }
     }
+
+        public enum CameraActivity
+        {
+            Moving = 0,  // Camera is moving - use low quality with fewer updates
+            Static = 1   // Camera is static - use high quality with medium updates
+        }
 
     public static class CaptureTime
     {

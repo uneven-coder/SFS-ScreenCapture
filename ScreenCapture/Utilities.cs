@@ -327,14 +327,14 @@ namespace ScreenCapture
             int height = 39;
 
             var toggle = Builder.CreateToggleWithLabel(parent, width, height, getter, () =>
-            {   // Execute the toggle action and request preview update
+            {
                 try
                 {
                     action?.Invoke();
-                    World.OwnerInstance?.RequestPreviewUpdate();
+                    Main.World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                 }
                 catch (Exception ex)
-                {   // Log errors to help diagnose UI callback issues
+                {
                     Debug.LogError($"Toggle '{label}' action failed: {ex.Message}");
                 }
             }, 0, 0, label);
@@ -352,13 +352,9 @@ namespace ScreenCapture
                     {
                         var lrt = toggle?.label.rectTransform;
                         if (lrt != null)
-                            // lrt.anchoredPosition = new Vector2(30f, lrt.anchoredPosition.y);
-                            // change the right side width to be bigger to reach to the reduced size toggle
                             lrt.sizeDelta = new Vector2(lrt.sizeDelta.x * sizeFactor, lrt.sizeDelta.y);
                         lrt.anchoredPosition = new Vector2(lrt.anchoredPosition.x * sizeFactor, lrt.anchoredPosition.y);
                     }
-                    // else
-                    //     tgo.transform.localScale = tgo.transform.localScale * 0.5f;
                 }
             }
             catch (Exception ex) { Debug.LogWarning($"Failed to resize toggle: {ex.Message}"); }
@@ -387,9 +383,10 @@ namespace ScreenCapture
             {
                 if (float.TryParse(val, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float crop))
                 {
-                    // Clamp input values to 0-100 range at input level
                     float clampedCrop = Mathf.Clamp(crop, 0f, 100f);
                     setValue(clampedCrop);
+                    CacheManager.InvalidateCropCache();
+                    UpdatePreviewCropping();
                 }
             });
         }
@@ -419,7 +416,7 @@ namespace ScreenCapture
         }
 
         public static void ToggleInteriorView()
-        {   // Toggle global interior visibility using the game's InteriorManager
+        {
             try
             {
                 if (SFS.InteriorManager.main != null)
@@ -436,9 +433,6 @@ namespace ScreenCapture
             {
                 Debug.LogWarning($"Failed to toggle interior visibility: {ex.Message}");
             }
-
-            // Request preview refresh if available
-            World.OwnerInstance?.RequestPreviewUpdate();
         }
 
 
@@ -671,9 +665,8 @@ namespace ScreenCapture
 
             World.PreviewCamera = SetupPreviewCamera(World.MainCamera, Captue.PreviewRT, World.PreviewCamera);
 
-            // Initial render with proper visibility settings
-            if (World.OwnerInstance != null)
-                World.OwnerInstance.RequestPreviewUpdate();
+            // Initial render: schedule via adaptive system
+            World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
         }
 
         private static void SetupContainerLayout(Container imageContainer, float width, float height)
@@ -766,13 +759,12 @@ namespace ScreenCapture
         }
 
         public static void UpdatePreviewCulling()
-        {   // Deprecated - now handled by manual preview update requests
-            // This prevents conflicting preview rendering systems
-            World.OwnerInstance?.RequestPreviewUpdate();
+        {
+            // Deprecated - preview updates now handled automatically by adaptive system
         }
 
         public static void UpdatePreviewCropping()
-        {
+        {   // Apply crop via UVs and resize from current RT + crop to avoid stretching, then schedule update
             if (World.PreviewCamera == null || Captue.PreviewImage == null)
                 return;
 
@@ -780,14 +772,31 @@ namespace ScreenCapture
             Main.LastScreenHeight = Screen.height;
 
             var (left, top, right, bottom) = GetNormalizedCropValues();
-            var (origW, origH) = CalculatePreviewDimensions();
-            var (cropW, cropH) = CacheManager.GetCachedCroppedDimensions(origW, origH);
 
+            // Keep camera rect full; crop via UVs only
             World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
             Captue.PreviewImage.uvRect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom);
 
+            // Resize RawImage using current RT size and crop to avoid double-aspect application
+            UpdatePreviewImageLayoutForCurrentRT();
+
+            // Schedule adaptive update rather than forcing a render
+            World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
+        }
+
+        public static void UpdatePreviewImageLayoutForCurrentRT()
+        {   // Update RawImage size using current RT and crop to avoid stretching
+            if (Captue.PreviewImage == null)
+                return;
+
+            int rtW = (Captue.PreviewRT != null && Captue.PreviewRT.IsCreated()) ? Captue.PreviewRT.width : CalculatePreviewDimensions().width;
+            int rtH = (Captue.PreviewRT != null && Captue.PreviewRT.IsCreated()) ? Captue.PreviewRT.height : CalculatePreviewDimensions().height;
+
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            int cropW = Mathf.Max(1, Mathf.RoundToInt(rtW * (1f - left - right)));
+            int cropH = Mathf.Max(1, Mathf.RoundToInt(rtH * (1f - top - bottom)));
+
             UpdatePreviewImageSize(cropW, cropH);
-            RefreshRenderTextureIfNeeded(origW, origH);
         }
 
         public static (float left, float top, float right, float bottom) GetNormalizedCropValues()
@@ -818,14 +827,22 @@ namespace ScreenCapture
         }
 
         private static void UpdatePreviewImageSize(int cropW, int cropH)
-        {
-            float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
+        {   // Fit inside 520x430 while preserving aspect
             const float containerMaxWidth = 520f;
+            const float containerMaxHeight = 430f;
 
-            float finalWidth = cropW > containerMaxWidth ? containerMaxWidth : cropW;
-            float finalHeight = finalWidth / croppedAspect;
+            float aspect = (float)cropW / Mathf.Max(1, cropH);
 
-            if (Captue.PreviewImage.rectTransform != null)
+            float widthByWidth = Mathf.Min(containerMaxWidth, cropW);
+            float heightFromWidth = widthByWidth / Mathf.Max(1e-6f, aspect);
+
+            float heightByHeight = Mathf.Min(containerMaxHeight, cropH);
+            float widthFromHeight = heightByHeight * aspect;
+
+            float finalWidth = widthFromHeight <= containerMaxWidth ? widthFromHeight : widthByWidth;
+            float finalHeight = widthFromHeight <= containerMaxWidth ? heightByHeight : heightFromWidth;
+
+            if (Captue.PreviewImage?.rectTransform != null)
                 Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
 
             UpdateParentLayout(finalHeight);

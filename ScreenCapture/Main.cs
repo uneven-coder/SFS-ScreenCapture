@@ -192,19 +192,27 @@ namespace ScreenCapture
         private int lastScreenHeight;
         private float lastPreviewUpdate;
 
-        // Camera tracking for preview optimization
+        // Camera tracking for preview optimization with packed state
         private Vector3 lastCameraPosition;
         private Quaternion lastCameraRotation;
-
-        // Adaptive preview rendering with simplified quality system
         private CameraActivity currentActivity = CameraActivity.Static;
-
-        // Debounce fields for camera quality updates
         private CameraActivity lastAppliedActivity = CameraActivity.Static;
-        private CameraActivity lastRequestedActivity = CameraActivity.Static;
-        private float qualityDebounceDelay = 0.05f; // Reduced delay for faster quality switching
+        
+        // Optimized state flags for branch reduction and CPU prediction
+        private float qualityDebounceDelay = 0.03f;
         private float lastQualityRequestTime;
         private bool qualityApplyScheduled = false;
+        
+        // Pre-calculated quality states for branch prediction
+        private static readonly (int res, FilterMode filter, int aa)[] QualityPresets = 
+        {
+            (128, FilterMode.Point, 1),     // Moving/Low quality - index 0
+            (1024, FilterMode.Bilinear, 4)  // Static/High quality - index 1
+        };
+        
+        // RT pool for instant switching without allocation lag
+        private RenderTexture[] rtPool = new RenderTexture[2];
+        private int activeRTIndex = -1;
 
         // Optimized movement detection thresholds
         private static readonly float VelocityThresholdSq = 0.01f;       // Squared velocity threshold for faster comparison
@@ -260,14 +268,28 @@ namespace ScreenCapture
         }
 
         private void CleanupPreviewResources()
-        {   // Release and destroy preview rendering resources
+        {   // Release and destroy preview rendering resources including RT pool
             PreviewImage = null;
+            
+            // Clean up main RT
             if (PreviewRT != null)
             {
                 PreviewRT.Release();
                 UnityEngine.Object.Destroy(PreviewRT);
                 PreviewRT = null;
             }
+            
+            // Clean up RT pool to prevent memory leaks
+            for (int i = 0; i < rtPool.Length; i++)
+            {
+                if (rtPool[i] != null)
+                {
+                    rtPool[i].Release();
+                    UnityEngine.Object.Destroy(rtPool[i]);
+                    rtPool[i] = null;
+                }
+            }
+            activeRTIndex = -1;
         }
 
         private void CleanupUIHolder()
@@ -319,204 +341,307 @@ namespace ScreenCapture
                 GameCamerasManager.main.world_Camera.rotation.OnChange -= updateCameraRotation;
         }
 
-        private void updateCameraRotation()
-        {   // Update preview camera rotation to match main camera
-            if (World.MainCamera != null && World.PreviewCamera != null && GameCamerasManager.main?.world_Camera?.camera != null)
-            {
-                var targetRotation = GameCamerasManager.main.world_Camera.camera.transform.rotation;
-                World.MainCamera.transform.rotation = targetRotation;
-                World.PreviewCamera.transform.rotation = targetRotation;
-            }
+        void updateCameraRotation()
+        {   // Sync preview camera transform with main camera without overriding zoom-sensitive properties
+            if (World.MainCamera == null || World.PreviewCamera == null || 
+                GameCamerasManager.main?.world_Camera?.camera == null) return;
+
+            var mainCameraSource = GameCamerasManager.main.world_Camera.camera;
+            var mainTransform = mainCameraSource.transform;
+            var previewTransform = World.PreviewCamera.transform;
+
+            previewTransform.position = mainTransform.position;
+            previewTransform.rotation = mainTransform.rotation;
+            previewTransform.localScale = mainTransform.localScale;
         }
 
         private void Update()
-        {   // Handle window minimization and adaptive preview updates
-            if (World.MainCamera == null)
-                World.MainCamera = GameCamerasManager.main?.world_Camera?.camera;
-
+        {   // Handle window minimization and adaptive preview updates with branch optimization
+            if (World.MainCamera == null) World.MainCamera = GameCamerasManager.main?.world_Camera?.camera;
+            
             CheckForScreenSizeChange();
 
-            if (closableWindow == null)
-                return;
+            if (closableWindow == null) return;
 
             bool minimized = closableWindow.Minimized;
             ref bool wasMinimized = ref Main.World.wasMinimized;
 
             if (minimized != wasMinimized)
-            {   // Handle window state change
+            {   // Handle state change with ternary for branch reduction
                 (minimized ? windowCollapsedAction : windowOpenedAction)?.Invoke();
                 wasMinimized = minimized;
                 Main.World.wasMinimized = wasMinimized;
                 mainWindow?.UpdateBackgroundWindowVisibility();
             }
 
-            if (!minimized && PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
-            {
-                if (CheckForSignificantChanges(ref lastCameraPosition, ref lastCameraRotation, lastPreviewUpdate,
-                                               VelocityThresholdSq, RotationVelocityThreshold, PositionDeltaThresholdSq, RotationDeltaThreshold,
-                                               UpdateIntervals[0], UpdateIntervals[1], out var activity))
-                {
-                    currentActivity = activity;
-                    UpdatePreviewRendering();
-                }
+            if (minimized || PreviewImage == null || World.MainCamera == null || World.PreviewCamera == null) return;
+
+            // Movement cadence gate: schedule preview update when interval elapses
+            if (CheckForSignificantChanges(ref lastCameraPosition, ref lastCameraRotation, lastPreviewUpdate,
+                VelocityThresholdSq, RotationVelocityThreshold, PositionDeltaThresholdSq, RotationDeltaThreshold,
+                UpdateIntervals[0], UpdateIntervals[1], out var activity))
+            {   // Update activity and schedule rendering
+                currentActivity = activity;
+                lastPreviewUpdate = Time.unscaledTime;
+                
+                // Sync camera once when we decided an update is due
+                if (GameCamerasManager.main?.world_Camera?.camera != null)
+                    updateCameraRotation();
+
+                qualityApplyScheduled = true;
+                lastQualityRequestTime = Time.unscaledTime - qualityDebounceDelay;  // expire debounce
+                UpdateAdaptivePreviewSystem();
             }
-
-            // Apply any pending quality change if debounce time passed
-            // Debounced application of camera quality settings
-            if (qualityApplyScheduled && Time.unscaledTime - lastQualityRequestTime >= qualityDebounceDelay)
-                ApplyCameraQualitySettingsImmediate();
-        }
-
-
-
-
-
-        public void RequestPreviewUpdate()
-        {   // Public method to request preview update from UI components
-            if (closableWindow != null && !closableWindow.Minimized &&
-                PreviewImage != null && World.MainCamera != null && World.PreviewCamera != null)
-            { /* Intentionally minimal: next Update will handle refresh */ }
+            else if (currentActivity != lastAppliedActivity || qualityApplyScheduled)
+                UpdateAdaptivePreviewSystem();
         }
 
         private void CheckForScreenSizeChange()
-        {   // Monitor screen resolution and trigger action when it changes
+        {   // Monitor screen resolution and schedule adaptive update when it changes
             if (lastScreenWidth != Screen.width || lastScreenHeight != Screen.height)
             {
                 lastScreenWidth = Screen.width;
                 lastScreenHeight = Screen.height;
 
                 try
-                { OnScreenSizeChanged?.Invoke(); }
+                { 
+                    OnScreenSizeChanged?.Invoke(); 
+                    InvalidateRTPool();
+                    SchedulePreviewUpdate(immediate: true);
+
+                    // Ensure the preview image fits inside its box at full scale after resolution change
+                    FitPreviewImageToBox(1.0f);
+                }
                 catch (System.Exception ex)
                 { Debug.LogWarning($"Error in screen size change handler: {ex.Message}"); }
             }
         }
 
-        private void UpdatePreviewRendering()
-        {   // Delegate to UI system which handles proper PREVIEW_SCALE_FIX scaling and cropping
-            EnsureAdaptivePreviewRT();
-            ApplyCameraQualitySettings(); // Schedule camera quality update (debounced)
-            mainWindow?.RequestPreviewUpdate();
-            lastPreviewUpdate = Time.unscaledTime;
-        }
-
-        private void EnsureAdaptivePreviewRT()
-        {   // Adjust preview RenderTexture size and filtering based on activity
-            try
+        private void InvalidateRTPool()
+        {   // Clear RT pool to force recreation with new dimensions
+            for (int i = 0; i < rtPool.Length; i++)
             {
-                if (PreviewImage == null)
-                    return;
-
-                int targetResolution;
-                FilterMode filter;
-                int antiAliasing;
-
-                if (currentActivity == CameraActivity.Moving)
-                {   // Low quality for moving
-                    targetResolution = 128;
-                    filter = FilterMode.Point;
-                    antiAliasing = 1;
-                }
-                else
-                {   // High quality for static
-                    targetResolution = 1024;
-                    filter = FilterMode.Bilinear;
-                    antiAliasing = 4;
-                }
-
-                // Calculate aspect-correct dimensions from target resolution
-                float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
-                int targetW, targetH;
-
-                if (screenAspect >= 1f)
-                {   // Landscape: width = target, height derived from aspect
-                    targetW = targetResolution;
-                    targetH = Mathf.Max(64, Mathf.RoundToInt(targetResolution / screenAspect));
-                }
-                else
-                {   // Portrait: height = target, width derived from aspect
-                    targetH = targetResolution;
-                    targetW = Mathf.Max(64, Mathf.RoundToInt(targetResolution * screenAspect));
-                }
-
-                // Check if RenderTexture needs recreation
-                bool needsRecreation = PreviewRT == null ||
-                                        PreviewRT.width != targetW ||
-                                        PreviewRT.height != targetH ||
-                                        PreviewRT.antiAliasing != antiAliasing ||
-                                        PreviewRT.filterMode != filter;
-
-                if (!needsRecreation)
-                    return;
-
-                if (PreviewRT != null)
+                if (rtPool[i] != null)
                 {
-                    PreviewRT.Release();
-                    UnityEngine.Object.Destroy(PreviewRT);
-                    PreviewRT = null;
+                    rtPool[i].Release();
+                    UnityEngine.Object.Destroy(rtPool[i]);
+                    rtPool[i] = null;
                 }
-
-                var rt = new RenderTexture(targetW, targetH, 24, RenderTextureFormat.ARGB32)
-                {
-                    antiAliasing = antiAliasing,
-                    filterMode = filter
-                };
-                rt.Create();
-                PreviewRT = rt;
-
-                if (PreviewImage != null)
-                    PreviewImage.texture = PreviewRT;
-
-                if (World.PreviewCamera != null)
-                    World.PreviewCamera.targetTexture = PreviewRT;
             }
-            catch (System.Exception ex)
-            { Debug.LogWarning($"Adaptive RT setup failed: {ex.Message}"); }
+            activeRTIndex = -1;
         }
 
-        private void ApplyCameraQualitySettings()
-        {   // Schedule camera quality changes using debounce to avoid redundant rapid updates
-            if (World.PreviewCamera == null)
-                return;
+        private void UpdateAdaptivePreviewSystem()
+        {   // Unified adaptive preview system with CPU branch prediction optimization
+            if (PreviewImage == null || World.PreviewCamera == null) return;
 
-            // If activity hasn't changed and there's no pending update, do nothing
-            if (currentActivity == lastAppliedActivity && !qualityApplyScheduled)
-                return;
+            bool activityChanged = currentActivity != lastAppliedActivity;
+            if (!activityChanged && !qualityApplyScheduled) return;  // Fast exit for no-op frames
 
-            // Record requested activity and reset debounce timer
-            lastRequestedActivity = currentActivity;
-            lastQualityRequestTime = Time.unscaledTime;
-            qualityApplyScheduled = true;
+            float currentTime = Time.unscaledTime;
+            bool debounceExpired = float.IsNegativeInfinity(lastQualityRequestTime) ||
+                                   (currentTime - lastQualityRequestTime) >= qualityDebounceDelay;
+            
+            // Only start debounce on the transition edge; do not reset while already scheduled
+            if (activityChanged && !qualityApplyScheduled)
+            {   // Schedule quality update once per transition
+                lastQualityRequestTime = currentTime;
+                qualityApplyScheduled = true;
+            }
+
+            if (qualityApplyScheduled && debounceExpired)
+            {   // Compute target preset and dimensions based on screen aspect (crop applied via UV/RawImage)
+                int qualityIndex = currentActivity == CameraActivity.Static ? 1 : 0;
+                var (targetRes, filter, antiAliasing) = QualityPresets[qualityIndex];
+                
+                float screenAspect = (float)Screen.width / Mathf.Max(1, Screen.height);
+                int targetW = screenAspect >= 1f ? targetRes : Mathf.Max(64, Mathf.RoundToInt(targetRes * screenAspect));
+                int targetH = screenAspect >= 1f ? Mathf.Max(64, Mathf.RoundToInt(targetRes / screenAspect)) : targetRes;
+
+                // Switch or validate RT first to avoid overwriting settings later
+                SwitchToPooledRT(qualityIndex, targetW, targetH, filter, antiAliasing);
+
+                // Ensure camera transform is synced to main at render time without touching FOV/ortho
+                if (GameCamerasManager.main?.world_Camera?.camera != null)
+                    updateCameraRotation();
+
+                // Apply background color for transparent/solid modes
+                try { World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor(); } catch { }
+
+                // Apply zoom after sync and after RT switch to preserve state
+                try { CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, Main.PreviewZoomLevel); } catch { }
+
+                // Apply quality options (HDR/MSAA/etc.)
+                ApplyCameraQualityBatch(qualityIndex == 1);
+                
+                // Ensure UI layout matches new RT and crop
+                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+
+                // Fit RawImage inside its parent box at full scale without changing the box
+                FitPreviewImageToBox(1.0f);
+                
+                // Temporarily toggle scene visibility for background/terrain and hidden rockets
+                System.Collections.Generic.List<(Renderer renderer, bool previousEnabled)> changedRenderers = null;
+                try
+                {
+                    changedRenderers = CaptureUtilities.ApplySceneVisibilityTemporary(showBackground, showTerrain, Main.HiddenRockets);
+                }
+                catch { }
+
+                // Render updated frame
+                try
+                {
+                    if (World.PreviewCamera?.targetTexture != null)
+                        World.PreviewCamera.Render();
+                }
+                finally
+                {
+                    try { CaptureUtilities.RestoreSceneVisibility(changedRenderers); } catch { }
+                }
+                
+                lastAppliedActivity = currentActivity;
+                qualityApplyScheduled = false;
+            }
         }
 
-        private void ApplyCameraQualitySettingsImmediate()
-        {   // Immediately apply camera rendering quality settings (called after debounce)
-            if (World.PreviewCamera == null)
+        private void FitPreviewImageToBox(float scaleFactor = 1.0f)
+        {   // Size RawImage to fit inside its parent box while preserving cropped aspect with proper UI layering
+            if (PreviewImage == null)
                 return;
+
+            var img = PreviewImage.rectTransform;
+            var parent = img != null ? img.parent as RectTransform : null;
+            if (img == null || parent == null)
+                return;
+
+            // Ensure proper UI hierarchy and prevent hardware overlay rendering
+            var imgGO = img.gameObject;
+            
+            // Remove any Canvas components that might cause independent rendering
+            var allComponents = imgGO.GetComponentsInChildren<Component>();
+            foreach (var comp in allComponents)
+            {
+                if (comp != null && comp.GetType().Name == "Canvas")
+                    UnityEngine.Object.DestroyImmediate(comp);
+            }
+            
+            // Ensure image follows parent's layer and sorting
+            imgGO.layer = parent.gameObject.layer;
+            
+            // Add mask to image to contain content within bounds
+            var mask = imgGO.GetComponent<RectMask2D>() ?? imgGO.AddComponent<RectMask2D>();
+
+            float boxW = Mathf.Max(1f, parent.rect.width);
+            float boxH = Mathf.Max(1f, parent.rect.height);
+
+            int rtW = (PreviewRT != null && PreviewRT.IsCreated()) ? PreviewRT.width : Screen.width;
+            int rtH = (PreviewRT != null && PreviewRT.IsCreated()) ? PreviewRT.height : Screen.height;
+
+            var (left, top, right, bottom) = CaptureUtilities.GetNormalizedCropValues();
+            float cropW = Mathf.Max(1f, rtW * (1f - left - right));
+            float cropH = Mathf.Max(1f, rtH * (1f - top - bottom));
+            float aspect = cropW / Mathf.Max(1f, cropH);
+
+            float fitW = boxW;
+            float fitH = fitW / Mathf.Max(1e-6f, aspect);
+            if (fitH > boxH)
+            {   // Height-limited; recompute width from height
+                fitH = boxH;
+                fitW = fitH * aspect;
+            }
+
+            float s = Mathf.Clamp01(scaleFactor);
+            fitW *= s;
+            fitH *= s;
+
+            // Size image to fit within box bounds and center it
+            img.anchorMin = new Vector2(0.5f, 0.5f);
+            img.anchorMax = new Vector2(0.5f, 0.5f);
+            img.pivot = new Vector2(0.5f, 0.5f);
+            img.sizeDelta = new Vector2(fitW, fitH);
+            img.anchoredPosition = Vector2.zero;
+            img.localScale = Vector3.one;
+
+            // Apply UV cropping to show only the cropped portion
+            var uvLeft = left;
+            var uvBottom = bottom;
+            var uvWidth = 1f - left - right;
+            var uvHeight = 1f - top - bottom;
+            
+            try { PreviewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); } catch { }
+
+            // Ensure image is properly integrated in UI hierarchy
+            PreviewImage.raycastTarget = false;
+            PreviewImage.material = null; // Prevent custom materials that might cause overlay issues
+            PreviewImage.maskable = true; // Enable masking to respect RectMask2D bounds
+            
+            // Force immediate layout calculation to ensure proper positioning
+            if (parent != null)
+                UnityEngine.UI.LayoutRebuilder.ForceRebuildLayoutImmediate(parent);
+        }
+
+        private void SwitchToPooledRT(int qualityIndex, int targetW, int targetH, FilterMode filter, int antiAliasing)
+        {   // Instant RT switching with stable camera alignment to prevent view shifting
+            // CPU prediction: check if current RT is already correct (most common case)
+            if (activeRTIndex == qualityIndex && PreviewRT != null && 
+                PreviewRT.width == targetW && PreviewRT.height == targetH) return;
 
             try
             {
-                bool isHighQuality = lastRequestedActivity == CameraActivity.Static;
+                // Validate pool RT or create if needed
+                if (rtPool[qualityIndex] == null || rtPool[qualityIndex].width != targetW || 
+                    rtPool[qualityIndex].height != targetH || rtPool[qualityIndex].filterMode != filter)
+                {   // Create new RT with optimized settings
+                    rtPool[qualityIndex]?.Release();
+                    rtPool[qualityIndex] = new RenderTexture(targetW, targetH, 24, RenderTextureFormat.ARGB32)
+                    {   // Inline property setting for CPU cache efficiency
+                        antiAliasing = antiAliasing,
+                        filterMode = filter,
+                        useMipMap = false,
+                        autoGenerateMips = false
+                    };
+                    rtPool[qualityIndex].Create();
+                }
 
+                // Use existing utility function to setup preview camera with proper alignment
+                World.PreviewCamera = SetupPreviewCamera(World.MainCamera, rtPool[qualityIndex], World.PreviewCamera);
+
+                // Atomic switch without frame gap
+                PreviewRT = rtPool[qualityIndex];
+                PreviewImage.texture = PreviewRT;
+                activeRTIndex = qualityIndex;
+            }
+            catch (System.Exception ex) { Debug.LogWarning($"RT pool switch failed: {ex.Message}"); }
+        }
+
+        private void ApplyCameraQualityBatch(bool isHighQuality)
+        {   // Batch camera quality updates to single operation for CPU efficiency
+            try
+            {
+                // Branch prediction: high quality is more common during preview
                 if (isHighQuality)
-                {   // High quality settings for static preview
+                {   // High quality path - expected by CPU predictor
                     World.PreviewCamera.renderingPath = RenderingPath.DeferredShading;
                     World.PreviewCamera.allowHDR = true;
                     World.PreviewCamera.allowMSAA = true;
                 }
                 else
-                {   // Low quality settings for movement
+                {   // Low quality path - less common, but still optimized
                     World.PreviewCamera.renderingPath = RenderingPath.Forward;
                     World.PreviewCamera.allowHDR = false;
                     World.PreviewCamera.allowMSAA = false;
                 }
-
-                // Update tracking state
-                lastAppliedActivity = lastRequestedActivity;
-                qualityApplyScheduled = false;
             }
-            catch (System.Exception ex)
-            { Debug.LogWarning($"Camera quality settings failed: {ex.Message}"); }
+            catch (System.Exception ex) { Debug.LogWarning($"Camera quality batch update failed: {ex.Message}"); }
+        }
+
+        public void SchedulePreviewUpdate(bool immediate = false)
+        {   // Schedule an adaptive preview quality update; immediate bypasses debounce
+            qualityApplyScheduled = true;
+            lastQualityRequestTime = immediate ? float.NegativeInfinity : Time.unscaledTime;
+
+            // Ensure preview image fits properly after any scheduling
+            try { FitPreviewImageToBox(1.0f); } catch { }
         }
     }
 }

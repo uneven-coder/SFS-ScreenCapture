@@ -520,7 +520,6 @@ namespace ScreenCapture
             var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
             var prevTarget = World.PreviewCamera.targetTexture;
 
-            // Render full scene without viewport manipulation to prevent stretching
             World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
             World.PreviewCamera.targetTexture = Captue.PreviewRT;
             World.PreviewCamera.Render();
@@ -528,9 +527,9 @@ namespace ScreenCapture
 
             CaptureUtilities.RestoreSceneVisibility(modified);
 
-            // Update UI layout to reflect current crop settings
-            if (Captue.PreviewImage != null)
-                UpdatePreviewBorderSize();
+            // Update RawImage layout first, then make border/parent follow image size
+            CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+            if (Captue.PreviewImage != null) UpdatePreviewBorderSize();
         }
 
         private void OnScreenSizeChanged()
@@ -908,45 +907,19 @@ namespace ScreenCapture
                 if (previewContainer.rectTransform.parent != null)
                     LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform.parent as RectTransform);
 
-                // Ensure image fits properly in container
-                var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
-                var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
+                // Update RawImage size from current RT and crop, then sync border and parent
+                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
 
-                // Calculate proper aspect ratio of the cropped content
-                float croppedAspect = (float)cropW / Mathf.Max(1, cropH);
-
-                // Maintain container width constraint and adjust height
-                float containerMaxWidth = 520f;
-                float finalWidth, finalHeight;
-
-                if (cropW > containerMaxWidth)
-                {   // Scale down to fit width
-                    finalWidth = containerMaxWidth;
-                    finalHeight = finalWidth / croppedAspect;
-                }
-                else
-                {   // Use original cropped dimensions
-                    finalWidth = cropW;
-                    finalHeight = cropH;
-                }
-
-                // Apply updated dimensions
-                if (Captue.PreviewImage.rectTransform != null)
+                if (Captue.PreviewImage?.rectTransform != null)
                 {
-                    Captue.PreviewImage.rectTransform.sizeDelta = new Vector2(finalWidth, finalHeight);
-                    Captue.PreviewImage.rectTransform.localScale = Vector3.one * PREVIEW_SCALE_FIX;
+                    var imgSize = Captue.PreviewImage.rectTransform.sizeDelta;
+                    var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
+                    parentLayout.preferredHeight = imgSize.y + 12f;
+                    parentLayout.minHeight = imgSize.y + 12f;
                 }
 
                 // Update border to match new image size
                 UpdatePreviewBorderSize();
-
-                // Update parent layout
-                var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>();
-                if (parentLayout != null)
-                {
-                    parentLayout.preferredHeight = finalHeight;
-                    parentLayout.minHeight = finalHeight;
-                }
             }
 
             // Re-render the preview with cropping applied
@@ -957,64 +930,8 @@ namespace ScreenCapture
             }
         }
 
-        private void CreatePreviewBorder()
-        {   // Create a border box and make the preview image a child element
-            if (previewContainer == null || Captue.PreviewImage == null)
-                return;
-
-            try
-            {
-                var imageRect = Captue.PreviewImage.rectTransform;
-                if (imageRect == null)
-                    return;
-
-                // Store current image dimensions and settings
-                var currentSize = imageRect.sizeDelta;
-
-                // Create border box with same dimensions as image
-                previewBorder = Builder.CreateBox(previewContainer, Mathf.RoundToInt(currentSize.x), Mathf.RoundToInt(currentSize.y), 0, 0, 0.2f);
-                previewBorder.Color = new Color(0.4f, 0.48f, 0.6f, 0.6f);
-
-                // Move the preview image to be a child of the border box
-                Captue.PreviewImage.transform.SetParent(previewBorder.gameObject.transform, false);
-                Captue.PreviewImage.gameObject.layer = previewContainer.gameObject.layer;
-
-                // Keep image at its original size and center it in the border
-                // Ensure the RawImage always fills the border exactly (no 1.5x scaling)
-                imageRect.anchorMin = Vector2.zero;
-                imageRect.anchorMax = Vector2.one;
-                imageRect.pivot = new Vector2(0.5f, 0.5f);
-                imageRect.sizeDelta = Vector2.zero;
-                imageRect.anchoredPosition = Vector2.zero;
-                imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
-
-                // Reset UV and texture to avoid unexpected scaling
-                try { Captue.PreviewImage.uvRect = new Rect(0f, 0f, 1f, 1f); } catch { }
-                if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
-                    Captue.PreviewImage.texture = Captue.PreviewRT;
-
-                // Disable layout on image since it's now positioned by its parent box
-                var imageLayout = Captue.PreviewImage.gameObject.GetComponent<LayoutElement>();
-                if (imageLayout != null)
-                    imageLayout.ignoreLayout = true;
-
-                // Ensure mask exists to contain the image inside border
-                var borderRect = previewBorder.gameObject.GetComponent<RectTransform>();
-                var mask = previewBorder.gameObject.GetComponent<RectMask2D>() ?? previewBorder.gameObject.AddComponent<RectMask2D>();
-
-                // Disable raycasts on the image so it doesn't block UI interaction and won't float above
-                Captue.PreviewImage.raycastTarget = false;
-
-                Debug.Log($"Created preview border with image as child element");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning($"Could not create preview border: {ex.Message}");
-            }
-        }
-
         private void UpdatePreviewBorderSize()
-        {   // Calculate border size and UV mapping with normalized side cropping and no position offset
+        {   // Size border to match RawImage and apply UV cropping; image drives the box
             if (previewContainer == null || Captue.PreviewImage == null || previewBorder == null)
                 return;
 
@@ -1025,46 +942,17 @@ namespace ScreenCapture
                 if (imageRect == null || borderRect == null)
                     return;
 
-                // Get base preview dimensions then apply normalized crop factors
-                var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
-                var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
-
-                float remainingWidthFactor = 1f - leftCrop - rightCrop;
-                float remainingHeightFactor = 1f - topCrop - bottomCrop;
-
-                int croppedWidth = Mathf.RoundToInt(origW * remainingWidthFactor);
-                int croppedHeight = Mathf.RoundToInt(origH * remainingHeightFactor);
-
-                float containerMaxWidth = 520f;
-                float aspectRatio = croppedHeight > 0 ? (float)croppedWidth / (float)croppedHeight : 1f;
-
-                float finalWidth, finalHeight;
-                if (croppedWidth > containerMaxWidth)
-                {   // Scale down proportionally to fit container
-                    finalWidth = containerMaxWidth;
-                    finalHeight = finalWidth / Mathf.Max(1e-6f, aspectRatio);
-                }
-                else
-                {   // Use actual cropped dimensions with no minimums to avoid pixel stretching
-                    finalWidth = Mathf.Max(1f, croppedWidth);
-                    finalHeight = Mathf.Max(1f, croppedHeight);
-                }
-
-                borderRect.sizeDelta = new Vector2(finalWidth, finalHeight);
-
-                imageRect.transform.SetParent(borderRect.gameObject.transform, false);
-                imageRect.localScale = Vector3.one;
-                imageRect.anchorMin = Vector2.zero;
-                imageRect.anchorMax = Vector2.one;
-                imageRect.pivot = new Vector2(0.5f, 0.5f);
-                imageRect.anchoredPosition = Vector2.zero;
-                imageRect.sizeDelta = Vector2.zero;
+                // Ensure image is laid out according to RT+crop and then mirror size to border
+                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+                var imgSize = imageRect.sizeDelta;
+                borderRect.sizeDelta = imgSize;
 
                 // UV cropping directly from normalized values
+                var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
                 float uvLeft = leftCrop;
                 float uvBottom = bottomCrop;
-                float uvWidth = remainingWidthFactor;
-                float uvHeight = remainingHeightFactor;
+                float uvWidth = 1f - leftCrop - rightCrop;
+                float uvHeight = 1f - topCrop - bottomCrop;
 
                 // Safety clamp to texture bounds
                 if (uvLeft + uvWidth > 1f) uvWidth = 1f - uvLeft;
@@ -1075,13 +963,10 @@ namespace ScreenCapture
                 if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
                     Captue.PreviewImage.texture = Captue.PreviewRT;
 
-                var mask = borderRect.GetComponent<RectMask2D>() ?? borderRect.gameObject.AddComponent<RectMask2D>();
-
+                // Update parent layout to follow border height
                 var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
-                parentLayout.preferredHeight = finalHeight + 12f;
-                parentLayout.minHeight = finalHeight + 12f;
-
-                Debug.Log($"Updated preview: Border={finalWidth}x{finalHeight}, UV=({uvLeft:F3},{uvBottom:F3},{uvWidth:F3},{uvHeight:F3}), Crops=L{CropLeft}%T{CropTop}%R{CropRight}%B{CropBottom}%");
+                parentLayout.preferredHeight = imgSize.y + 12f;
+                parentLayout.minHeight = imgSize.y + 12f;
             }
             catch (Exception ex)
             {   // Log but prevent UI errors from bubbling up
@@ -1090,100 +975,73 @@ namespace ScreenCapture
         }
 
         private void SetupPreview(Container parent)
-        {   // Create preview image first with border sized exactly to cropped dimensions
+        {   // Create preview image first with border sized exactly by RawImage size (RT+crop)
             if (parent == null)
                 return;
 
             DisableRaycastsInChildren(parent.gameObject);
 
-            // Create preview image first to get actual dimensions
+            // Create RawImage if missing directly under the provided container
             if (Captue.PreviewImage == null)
             {
-                var tempContainer = CreateNestedContainer(parent, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, null, false);
-                CaptureUtilities.SetupPreview(tempContainer);
-                UnityEngine.Object.Destroy(tempContainer.gameObject);
+                CaptureUtilities.SetupPreview(parent);
             }
-            
-            // Calculate dimensions based on crop settings
-            var (origW, origH) = CaptureUtilities.CalculatePreviewDimensions();
-            var (cropW, cropH) = CaptureUtilities.GetCroppedResolution(origW, origH);
-            
-            // Use exact cropped dimensions without artificial scaling or minimum constraints
-            int borderWidth = cropW;
-            int borderHeight = cropH;
 
-            // Create properly sized border box
-            previewBorder = Builder.CreateBox(parent, borderWidth, borderHeight, 0, 0, 0.2f);
+            // Size image from current RT and crop, then create border to match
+            CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+            var imgSize = Captue.PreviewImage?.rectTransform != null ? Captue.PreviewImage.rectTransform.sizeDelta : new Vector2(520f, 430f);
+
+            previewBorder = Builder.CreateBox(parent, Mathf.RoundToInt(imgSize.x), Mathf.RoundToInt(imgSize.y), 0, 0, 0.2f);
             previewBorder.Color = new Color(0.4f, 0.48f, 0.6f, 0.6f);
 
             var borderGO = previewBorder.gameObject;
             borderGO.layer = parent.gameObject.layer;
 
-            // Add RectMask2D component to clip overflow
             var mask = borderGO.GetComponent<RectMask2D>();
-            if (mask == null)
-                mask = borderGO.AddComponent<RectMask2D>();
+            if (mask == null) mask = borderGO.AddComponent<RectMask2D>();
 
-            // Configure image to fit border proportionally
             if (Captue.PreviewImage != null)
-            {
-                // Parent image to border
+            {   // Parent image to border and fill exactly
                 Captue.PreviewImage.transform.SetParent(borderGO.transform, false);
                 Captue.PreviewImage.gameObject.layer = borderGO.layer;
 
-                // Configure proper RawImage settings
-                Captue.PreviewImage.enabled = true;
-                Captue.PreviewImage.gameObject.SetActive(true);
-                
-                // Enforce fill mode for proper scaling
-                Captue.PreviewImage.uvRect = new Rect(0, 0, 1, 1);
-                if (Captue.PreviewRT != null)
-                    Captue.PreviewImage.texture = Captue.PreviewRT;
-
-                // Set image to completely fill border with proper anchoring
                 var imageRect = Captue.PreviewImage.rectTransform;
                 imageRect.anchorMin = Vector2.zero;
                 imageRect.anchorMax = Vector2.one;
                 imageRect.pivot = new Vector2(0.5f, 0.5f);
-                imageRect.sizeDelta = Vector2.zero;  // Fill border exactly
+                imageRect.sizeDelta = Vector2.zero;
                 imageRect.anchoredPosition = Vector2.zero;
                 imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
-                
-                // Ignore layout system
-                var imgLE = Captue.PreviewImage.gameObject.GetComponent<LayoutElement>() ?? 
-                    Captue.PreviewImage.gameObject.AddComponent<LayoutElement>();
+
+                var imgLE = Captue.PreviewImage.gameObject.GetComponent<LayoutElement>() ??
+                            Captue.PreviewImage.gameObject.AddComponent<LayoutElement>();
                 imgLE.ignoreLayout = true;
 
-                // Disable raycast so preview doesn't intercept input and so it won't float above
                 Captue.PreviewImage.raycastTarget = false;
 
-                // Ensure no independent Canvas exists on image or children
-                var imgCanvases = Captue.PreviewImage.gameObject.GetComponentsInChildren<UnityEngine.Component>(true)
-                    .Where(c => c != null && c.GetType().Name == "Canvas").ToArray();
-                foreach (var c in imgCanvases) try { UnityEngine.Object.Destroy(c); } catch { }
+                // Ensure RT assigned
+                if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
+                    Captue.PreviewImage.texture = Captue.PreviewRT;
             }
 
-            // Ensure proper window hierarchy and visibility control
             ForceWindowHierarchyCompliance(borderGO);
 
-            // Start visibility sync coroutine to follow window state
             if (World.UIHolder != null)
-            {
+            {   // Start visibility sync
                 var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
                 if (monoBehaviour != null)
                     monoBehaviour.StartCoroutine(SyncPreviewVisibility(borderGO));
             }
 
-            // Set container layout to match border size
             var le = parent.gameObject.GetComponent<LayoutElement>() ?? parent.gameObject.AddComponent<LayoutElement>();
             le.preferredWidth = 520f;
             le.minWidth = 520f;
             le.flexibleWidth = 0f;
-            le.preferredHeight = borderHeight + 12f;
-            le.minHeight = borderHeight + 12f;
+            le.preferredHeight = imgSize.y + 12f;
+            le.minHeight = imgSize.y + 12f;
 
             previewInitialized = true;
-            Debug.Log($"Preview setup: Border {borderWidth}x{borderHeight}, Original {origW}x{origH}, Cropped {cropW}x{cropH}");
+            Debug.Log($"Preview setup: Image {imgSize.x}x{imgSize.y}");
         }
 
         private void ForceWindowHierarchyCompliance(GameObject borderGO)

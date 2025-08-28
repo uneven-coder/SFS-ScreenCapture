@@ -174,8 +174,7 @@ namespace ScreenCapture
 
         // Object pool for performance-critical operations
         private static readonly System.Collections.Queue rendererListPool = new System.Collections.Queue();
-
-
+        private static readonly System.Collections.Queue gameObjectListPool = new System.Collections.Queue();
 
         private static System.Collections.Generic.List<(Renderer, bool)> GetPooledRendererList()
         {
@@ -192,6 +191,119 @@ namespace ScreenCapture
         {
             if (list != null && rendererListPool.Count < 4) // Limit pool size
                 rendererListPool.Enqueue(list);
+        }
+
+        private static System.Collections.Generic.List<(GameObject, bool)> GetPooledGameObjectList()
+        {
+            if (gameObjectListPool.Count > 0)
+            {
+                var list = (System.Collections.Generic.List<(GameObject, bool)>)gameObjectListPool.Dequeue();
+                list.Clear();
+                return list;
+            }
+            return new System.Collections.Generic.List<(GameObject, bool)>(32);
+        }
+
+        private static void ReturnPooledGameObjectList(System.Collections.Generic.List<(GameObject, bool)> list)
+        {
+            if (list != null && gameObjectListPool.Count < 4) // Limit pool size
+                gameObjectListPool.Enqueue(list);
+        }
+
+        // Preview-only interior visibility flag. This controls whether interiors are shown in the capture preview
+        // and does not modify the global InteriorManager state. Initialized from the global state if available.
+        private static bool previewInteriorVisible = true;
+        private static bool previewInteriorInitialized = false;
+
+        public static bool PreviewInteriorVisible
+        {
+            get 
+            {
+                try
+                {
+                    var im = SFS.InteriorManager.main;
+                    if (im != null)
+                        return im.interiorView.Value;
+                }
+                catch { }
+                return true; // Default to visible if InteriorManager not available
+            }
+            set 
+            {
+                try
+                {
+                    var im = SFS.InteriorManager.main;
+                    if (im != null)
+                        im.interiorView.Value = value;
+                }
+                catch { }
+            }
+        }
+
+        private static bool IsInteriorElement(GameObject go)
+        {   // Heuristic: detect interior objects by name or by any component type containing 'Interior' to avoid hard references
+            if (go == null) return false;
+            try
+            {
+                if (go.name.IndexOf("interior", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+
+                var comps = go.GetComponentsInParent<Component>(true);
+                for (int i = 0; i < comps.Length; i++)
+                {
+                    var tname = comps[i]?.GetType()?.Name;
+                    if (!string.IsNullOrEmpty(tname) && tname.IndexOf("Interior", StringComparison.OrdinalIgnoreCase) >= 0)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static int cachedInteriorLayerMask = -1;
+
+        private static int GetCachedInteriorLayerMask()
+        {   // Detect any layers with names containing 'interior' (case-insensitive) and cache bitmask
+            if (cachedInteriorLayerMask != -1)
+                return cachedInteriorLayerMask;
+
+            cachedInteriorLayerMask = 0;
+            try
+            {
+                for (int i = 0; i < 32; i++)
+                {
+                    string lname = LayerMask.LayerToName(i) ?? string.Empty;
+                    if (lname.IndexOf("interior", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        cachedInteriorLayerMask |= (1 << i);
+                        Debug.Log($"Found interior layer '{lname}' at index {i}");
+                    }
+                }
+                
+                if (cachedInteriorLayerMask == 0)
+                    Debug.Log("No interior layers found by name. Checking for 'Interior' layer specifically...");
+                
+                // Try specific interior layer names that might be used
+                string[] interiorLayerNames = { "Interior", "Interiors", "interior", "interiors" };
+                foreach (var layerName in interiorLayerNames)
+                {
+                    int layerIndex = LayerMask.NameToLayer(layerName);
+                    if (layerIndex >= 0 && layerIndex < 32)
+                    {
+                        cachedInteriorLayerMask |= (1 << layerIndex);
+                        Debug.Log($"Found interior layer '{layerName}' at index {layerIndex}");
+                    }
+                }
+                
+                Debug.Log($"Interior layer mask: {cachedInteriorLayerMask} (binary: {Convert.ToString(cachedInteriorLayerMask, 2)})");
+            }
+            catch (Exception ex) 
+            { 
+                Debug.LogWarning($"Error detecting interior layers: {ex.Message}");
+                cachedInteriorLayerMask = 0; 
+            }
+
+            return cachedInteriorLayerMask;
         }
 
         public static (int width, int height) GetResolutionFromWidth(int width)
@@ -302,20 +414,28 @@ namespace ScreenCapture
             }, text);
         }
 
-    public static void ToggleInteriorView()
-    {
-        if (SFS.InteriorManager.main != null)
-        {
-            SFS.InteriorManager.main.ToggleInteriorView();
+        public static void ToggleInteriorView()
+        {   // Toggle global interior visibility using the game's InteriorManager
             try
             {
-                bool state = SFS.InteriorManager.main.interiorView.Value;
-                // Example: log or use the state however you need
-                Console.WriteLine("Interior View is now: " + state);
+                if (SFS.InteriorManager.main != null)
+                {
+                    SFS.InteriorManager.main.ToggleInteriorView();
+                    Debug.Log($"Global interior visibility toggled to: {SFS.InteriorManager.main.interiorView.Value}");
+                }
+                else
+                {
+                    Debug.LogWarning("InteriorManager.main is null - cannot toggle interior view");
+                }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Failed to toggle interior visibility: {ex.Message}");
+            }
+            
+            // Request preview refresh if available
+            World.OwnerInstance?.RequestPreviewUpdate();
         }
-    }
 
 
         public static Container CreateNestedHorizontal(Container parent, float spacing, RectOffset padding, TextAnchor alignment, UIBase.ContainerContentDelegate contentCreator)
@@ -430,6 +550,14 @@ namespace ScreenCapture
                 int stars = LayerMask.GetMask("Stars");
                 if (stars != 0)
                     mask &= ~stars;
+            }
+
+            // Handle interior visibility through culling mask
+            if (!PreviewInteriorVisible)
+            {
+                int interiorMask = GetCachedInteriorLayerMask();
+                if (interiorMask != 0)
+                    mask &= ~interiorMask;
             }
 
             return mask;

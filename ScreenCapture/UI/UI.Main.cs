@@ -197,8 +197,8 @@ namespace ScreenCapture
                                 }
                             });
 
-                            CreateCompactToggle(leftCol, "Interiors", () => SFS.InteriorManager.main?.interiorView?.Value ?? false, () =>
-                            {   // Toggle interior view via utilities
+                            CreateCompactToggle(leftCol, "Interiors", () => SFS.InteriorManager.main?.interiorView?.Value ?? true, () =>
+                            {   // Toggle global interior visibility using the game's InteriorManager
                                 CaptureUtilities.ToggleInteriorView();
                             });
                         });

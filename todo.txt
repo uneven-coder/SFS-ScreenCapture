@@ -1,4 +1,4 @@
-XX	capture area
+XX	capture area (Not adding)
 ~~  add 4 inputs to change capture size to capture specific area
 ~~  add open captures folder
 ~~  a effect for when the capture is saved
@@ -9,13 +9,16 @@ XX	capture area
 ~~  add show interirors button
     add auto updater
     dynamic camera quality is wrong it should be high quality when not moving
+    make show interirors affect the preview only
+~~  when zooming and moving the camera dosent update fix stationary and moving quality
+    when changing background settings then restoring background it still keeps the settings
+
 
 Makewindow closed by defult
 
 UpdatePreviewRendering every update is intensive
 
-fix the stats lables its not saying any info
-
+XX fix the stats lables its not saying any info XX
 
 
 

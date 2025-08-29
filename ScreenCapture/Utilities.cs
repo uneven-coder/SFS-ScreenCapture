@@ -536,7 +536,7 @@ namespace ScreenCapture
             preview.targetTexture = targetRT;
             preview.cullingMask = mainCamera?.cullingMask ?? ~0;
             preview.clearFlags = CameraClearFlags.SolidColor;
-            preview.backgroundColor = GetBackgroundColor();
+            preview.backgroundColor = BackgroundUI.GetBackgroundColor();
 
             return preview;
         }
@@ -563,8 +563,6 @@ namespace ScreenCapture
             return mask;
         }
 
-        public static Color GetBackgroundColor() =>
-            new Color(BackgroundUI.R / 255f, BackgroundUI.G / 255f, BackgroundUI.B / 255f, BackgroundUI.Transparent ? 0f : 1f);
 
         public static void ApplyPreviewZoom(Camera mainCamera, Camera previewCamera, float zoomLevel)
         {

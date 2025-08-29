@@ -514,7 +514,7 @@ namespace ScreenCapture
 
             World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
             World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
-            World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
+            World.PreviewCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
             CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
 
             var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
@@ -784,7 +784,7 @@ namespace ScreenCapture
                 var prevMask = World.MainCamera.cullingMask;
                 World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
                 World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
-                World.MainCamera.backgroundColor = CaptureUtilities.GetBackgroundColor();
+                World.MainCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
 
                 var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
 

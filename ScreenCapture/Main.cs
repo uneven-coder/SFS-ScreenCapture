@@ -20,7 +20,6 @@ namespace ScreenCapture
 
         private static Captue s_captureInstance;
         private static int s_resolutionWidth = 1980;
-        private static float s_cropLeft, s_cropTop, s_cropRight, s_cropBottom;
 
         public static int ResolutionWidth
         {
@@ -39,6 +38,7 @@ namespace ScreenCapture
         public static float PreviewZoomLevel { get; set; } = 0f;
         public static float PreviewBasePivotDistance { get; set; } = 100f;
 
+        private static float s_cropLeft, s_cropTop, s_cropRight, s_cropBottom;
         public static float CropLeft
         {
             get => s_cropLeft;
@@ -51,7 +51,6 @@ namespace ScreenCapture
                 }
             }
         }
-
         public static float CropTop
         {
             get => s_cropTop;
@@ -64,7 +63,6 @@ namespace ScreenCapture
                 }
             }
         }
-
         public static float CropRight
         {
             get => s_cropRight;
@@ -77,7 +75,6 @@ namespace ScreenCapture
                 }
             }
         }
-
         public static float CropBottom
         {
             get => s_cropBottom;
@@ -99,7 +96,7 @@ namespace ScreenCapture
         public override string DisplayName => "ScreenCapture";
         public override string Author => "Cratior";
         public override string MinimumGameVersionNecessary => "1.5.10";
-        public override string ModVersion => "1.4.3"; // release, updates, fixes/changes
+        public override string ModVersion => "1.6.2"; // release, updates, fixes/changes
         public override string Description => "Adds a screenshot button to the world scene, allowing you to take screenshots at custom resolutions.";
 
         public override void Load()
@@ -119,29 +116,28 @@ namespace ScreenCapture
         }
 
         private void ManageUI(UnityEngine.SceneManagement.Scene scene)
-        {   // Handle UI creation and destruction based on scene
-            bool isWorldScene = scene.name == "World_PC";
+        {   // Update world-scene flag and manage persistent capture UI lifecycle
+            bool world = string.Equals(scene.name ?? string.Empty, "World_PC", StringComparison.Ordinal);
 
-            if (isWorldScene)
-                HandleWorldSceneEntry();
+            // Fast-path: nothing to do if capture instance isn't created yet
+            if (s_captureInstance == null)
+                return;
+
+            if (world)
+            {   // Entered world scene
+                try
+                {
+                    s_captureInstance.OnSceneEntered();
+                    s_captureInstance.ShowUI();
+                }
+                catch (Exception ex) { UnityEngine.Debug.LogWarning($"ManageUI: error entering scene: {ex.Message}"); }
+            }
             else
-                HandleSceneExit();
-        }
-
-        private void HandleWorldSceneEntry()
-        {   // Create UI when entering world scene
-            if (s_captureInstance != null)
-            {
-                s_captureInstance.OnSceneEntered();
-                s_captureInstance.ShowUI();
+            {   // Left world scene
+                try { s_captureInstance.OnSceneExited(); } catch (Exception ex) { UnityEngine.Debug.LogWarning($"ManageUI: error exiting scene: {ex.Message}"); }
             }
         }
 
-        private void HandleSceneExit()
-        {   // Destroy UI when leaving world scene
-            if (s_captureInstance != null)
-                s_captureInstance.OnSceneExited();
-        }
 
         // Static version of Captue for world context
         public static class World
@@ -466,7 +462,7 @@ namespace ScreenCapture
                     updateCameraRotation();
 
                 // Apply background color for transparent/solid modes
-                try { World.PreviewCamera.backgroundColor = CaptureUtilities.GetBackgroundColor(); } catch { }
+                try { World.PreviewCamera.backgroundColor = BackgroundUI.GetBackgroundColor(); } catch { }
 
                 // Apply zoom after sync and after RT switch to preserve state
                 try { CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, Main.PreviewZoomLevel); } catch { }

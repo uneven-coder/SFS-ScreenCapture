@@ -4,6 +4,7 @@ ScreenCapture is a tool for taking very customizable screenshots with controls f
 
 ## Example
 <img width="1120" height="455" alt="image" src="https://github.com/user-attachments/assets/198bd6ca-5bfa-4e76-a951-3e193b3c9953" />
+<img width="11633" height="3408" alt="2025-08-30_00-26-52" src="https://github.com/user-attachments/assets/2d337383-2028-4554-a46e-5e63e08ebab7" />
 
 
 ## Features

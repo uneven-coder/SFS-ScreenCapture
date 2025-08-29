@@ -18,7 +18,7 @@ namespace ScreenCapture
         private static (int origW, int origH, int cropW, int cropH) dimensionsCache = (-1, -1, -1, -1);
         private static (float left, float top, float right, float bottom) lastCropValues = (-1, -1, -1, -1);
         private static int lastScreenW = -1, lastScreenH = -1;
-        
+
         // Additional caching for expensive calculations
         private static (long gpuBudget, long cpuBudget) budgetCache = (-1, -1);
         private static int maxSafeWidthCache = -1;
@@ -193,27 +193,16 @@ namespace ScreenCapture
                 rendererListPool.Enqueue(list);
         }
 
-        private static System.Collections.Generic.List<(GameObject, bool)> GetPooledGameObjectList()
-        {
-            if (gameObjectListPool.Count > 0)
-            {
-                var list = (System.Collections.Generic.List<(GameObject, bool)>)gameObjectListPool.Dequeue();
-                list.Clear();
-                return list;
-            }
-            return new System.Collections.Generic.List<(GameObject, bool)>(32);
-        }
-
-        private static void ReturnPooledGameObjectList(System.Collections.Generic.List<(GameObject, bool)> list)
-        {
-            if (list != null && gameObjectListPool.Count < 4) // Limit pool size
-                gameObjectListPool.Enqueue(list);
-        }
-
-        // Preview-only interior visibility flag. This controls whether interiors are shown in the capture preview
-        // and does not modify the global InteriorManager state. Initialized from the global state if available.
-        private static bool previewInteriorVisible = true;
-        private static bool previewInteriorInitialized = false;
+        // private static System.Collections.Generic.List<(GameObject, bool)> GetPooledGameObjectList()
+        // {
+        //     if (gameObjectListPool.Count > 0)
+        //     {
+        //         var list = (System.Collections.Generic.List<(GameObject, bool)>)gameObjectListPool.Dequeue();
+        //         list.Clear();
+        //         return list;
+        //     }
+        //     return new System.Collections.Generic.List<(GameObject, bool)>(32);
+        // }
 
         public static bool PreviewInteriorVisible
         {
@@ -917,7 +906,7 @@ namespace ScreenCapture
 
             return new Rect(leftPixels, bottomPixels, croppedWidth, croppedHeight);
         }
-        
+
         public static bool CheckForSignificantChanges(ref Vector3 lastCameraPosition, ref Quaternion lastCameraRotation, float lastPreviewUpdate,
                                                       float velocityThresholdSq, float rotationVelocityThreshold, float positionDeltaThresholdSq, float rotationDeltaThreshold,
                                                       float movingInterval, float staticInterval, out CameraActivity activity)
@@ -960,11 +949,163 @@ namespace ScreenCapture
         }
     }
 
-        public enum CameraActivity
+
+    public static class PreviewUtilities
+    {
+        public static RawImage FitPreviewImageToBox(RawImage previewImage, RenderTexture PreviewRT, float scaleFactor = 1.0f)
         {
-            Moving = 0,  // Camera is moving - use low quality with fewer updates
-            Static = 1   // Camera is static - use high quality with medium updates
+            if (previewImage == null)
+                return null;
+
+            var img = previewImage.rectTransform;
+            var parent = img?.parent as RectTransform;
+            if (img == null || parent == null)
+                return null;
+
+            var imgGO = img.gameObject;
+
+            // Remove any Canvas components that might cause independent rendering
+            var allComponents = imgGO.GetComponentsInChildren<Component>();
+            foreach (var comp in allComponents)
+            {
+                if (comp != null && comp.GetType().Name == "Canvas")
+                    UnityEngine.Object.DestroyImmediate(comp);
+            }
+
+            // Ensure image follows parent's layer and sorting
+            imgGO.layer = parent.gameObject.layer;
+
+            // Add mask to image to contain content within bounds
+            var mask = imgGO.GetComponent<RectMask2D>() ?? imgGO.AddComponent<RectMask2D>();
+
+            float boxW = Mathf.Max(1f, parent.rect.width);
+            float boxH = Mathf.Max(1f, parent.rect.height);
+
+            int rtW = (PreviewRT != null && PreviewRT.IsCreated()) ? PreviewRT.width : Screen.width;
+            int rtH = (PreviewRT != null && PreviewRT.IsCreated()) ? PreviewRT.height : Screen.height;
+
+            var (left, top, right, bottom) = CaptureUtilities.GetNormalizedCropValues();
+            float cropW = Mathf.Max(1f, rtW * (1f - left - right));
+            float cropH = Mathf.Max(1f, rtH * (1f - top - bottom));
+            float aspect = cropW / Mathf.Max(1f, cropH);
+
+            float fitW = boxW;
+            float fitH = fitW / Mathf.Max(1e-6f, aspect);
+            if (fitH > boxH)
+            {
+                fitH = boxH;
+                fitW = fitH * aspect;
+            }
+
+            float s = Mathf.Clamp01(scaleFactor);
+            fitW *= s;
+            fitH *= s;
+
+            // Size image to fit within box bounds and center it
+            img.anchorMin = new Vector2(0.5f, 0.5f);
+            img.anchorMax = new Vector2(0.5f, 0.5f);
+            img.pivot = new Vector2(0.5f, 0.5f);
+            img.sizeDelta = new Vector2(fitW, fitH);
+            img.anchoredPosition = Vector2.zero;
+            img.localScale = Vector3.one;
+
+            // Apply UV cropping
+            var uvLeft = left;
+            var uvBottom = bottom;
+            var uvWidth = 1f - left - right;
+            var uvHeight = 1f - top - bottom;
+
+            try { previewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); } catch { }
+
+            // Ensure image is properly integrated in UI hierarchy
+            previewImage.raycastTarget = false;
+            previewImage.material = null;
+            previewImage.maskable = true;
+
+            // Force layout update
+            if (parent != null)
+                LayoutRebuilder.ForceRebuildLayoutImmediate(parent);
+
+            return previewImage;
         }
+
+        // RT pool for instant switching without allocation lag
+        private static RenderTexture[] rtPool = new RenderTexture[2];
+        private static int activeRTIndex = -1;
+
+        public static bool CleanupRTPool()
+        {   // Release and destroy all pooled render textures and return success status
+            bool anyDestroyed = false;
+
+            for (int i = 0; i < rtPool.Length; i++)
+            {
+                if (rtPool[i] != null)
+                {
+                    rtPool[i].Release();
+                    UnityEngine.Object.Destroy(rtPool[i]);
+                    rtPool[i] = null;
+                    anyDestroyed = true;
+                }
+            }
+            activeRTIndex = -1;
+            return anyDestroyed;
+        }
+
+        public static int InvalidateRTPool()
+        {   // Clear RT pool to force recreation with new dimensions and return count invalidated
+            int invalidatedCount = 0;
+
+            for (int i = 0; i < rtPool.Length; i++)
+            {
+                if (rtPool[i] != null)
+                {
+                    rtPool[i].Release();
+                    UnityEngine.Object.Destroy(rtPool[i]);
+                    rtPool[i] = null;
+                    invalidatedCount++;
+                }
+            }
+            activeRTIndex = -1;
+            return invalidatedCount;
+        }
+
+        public static (RenderTexture renderTexture, bool wasCreated, int poolIndex) SwitchToPooledRT(int poolIndex, int width, int height, FilterMode filterMode, int antiAliasing)
+        {   // Switch to pooled RT or create new one if needed and return RT data
+            poolIndex = Mathf.Clamp(poolIndex, 0, rtPool.Length - 1);
+            bool wasCreated = false;
+
+            if (activeRTIndex == poolIndex && rtPool[poolIndex] != null &&
+                rtPool[poolIndex].width == width && rtPool[poolIndex].height == height)
+                return (rtPool[poolIndex], false, poolIndex); // Already using correct RT
+
+            // Create new RT if needed
+            if (rtPool[poolIndex] == null || rtPool[poolIndex].width != width || rtPool[poolIndex].height != height)
+            {
+                if (rtPool[poolIndex] != null)
+                {
+                    rtPool[poolIndex].Release();
+                    UnityEngine.Object.Destroy(rtPool[poolIndex]);
+                }
+
+                rtPool[poolIndex] = new RenderTexture(width, height, 24)
+                {
+                    filterMode = filterMode,
+                    antiAliasing = antiAliasing
+                };
+                rtPool[poolIndex].Create();
+                wasCreated = true;
+            }
+
+            activeRTIndex = poolIndex;
+            return (rtPool[poolIndex], wasCreated, poolIndex);
+        }
+    }
+
+    public enum CameraActivity
+    {
+        Moving = 0,  // Camera is moving - use low quality with fewer updates
+        Static = 1   // Camera is static - use high quality with medium updates
+    }
 
     public static class CaptureTime
     {
@@ -1267,7 +1408,7 @@ namespace ScreenCapture
                     Time.timeScale = 1f;
                     yield return new UnityEngine.WaitForSecondsRealtime(stepSeconds);
                     Time.timeScale = 0f;
-                    
+
                     yield return new UnityEngine.WaitForSecondsRealtime(0.02f);
                 }
             }

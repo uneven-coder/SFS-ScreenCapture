@@ -14,4 +14,3 @@ using System.Security.Permissions;
 [assembly: ComVisible(false)]
 [assembly: Guid("2DC6B493-A854-43A4-B554-412E123093ED")]
 [assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: SecurityPermission(SecurityAction.RequestMinimum, SkipVerification = true)]

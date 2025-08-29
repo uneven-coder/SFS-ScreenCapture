@@ -41,7 +41,7 @@ namespace ScreenCapture
         private int lastEstimateWidth = -1;
         private float lastUpdateTime;
         private const float UPDATE_INTERVAL = 0.2f; // Update UI estimates every 200ms max
-        
+
         // Preview rendering optimization
         private bool previewNeedsUpdate = true;
         private float lastPreviewUpdate;
@@ -106,7 +106,6 @@ namespace ScreenCapture
 
         private void ConnectWindowEvents(UITools.ClosableWindow closableWindow)
         {   // Connect window minimize/maximize events to our action handlers
-            // Note: This might need adjustment based on the actual ClosableWindow event structure
             ref Action windowOpenedRef = ref World.OwnerInstance.windowOpenedAction;
             ref Action windowCollapsedRef = ref World.OwnerInstance.windowCollapsedAction;
 
@@ -115,18 +114,16 @@ namespace ScreenCapture
             var prevCollapse = windowCollapsedRef;
 
             windowOpenedRef = () =>
-            {
+            {   // Chain previous open action, then prepare preview
                 prevOpen?.Invoke();
                 EnsurePreviewSetup();
                 UpdateEstimatesUI();
-                RequestPreviewUpdate();  // Use local method instead of owner method
-                Debug.Log("Window opened action triggered");
+                RequestPreviewUpdate();
             };
 
             windowCollapsedRef = () =>
-            {
+            {   // Chain previous collapse action
                 prevCollapse?.Invoke();
-                Debug.Log("Window collapsed action triggered");
             };
         }
 
@@ -137,62 +134,44 @@ namespace ScreenCapture
                 // Create preview container with fixed width and dynamic height
                 previewContainer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, new RectOffset(6, 6, 6, 6), true);
 
-                // Reserve fixed width for preview container so layout doesn't shift when preview resizes
-                var previewLE = previewContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? previewContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
+                var previewLE = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
                 previewLE.preferredWidth = 520f;
                 previewLE.minWidth = 520f;
                 previewLE.flexibleWidth = 0f;
-                previewLE.preferredHeight = -1f; // Let height adjust to content
+                previewLE.preferredHeight = -1f;
 
-                // Setup preview immediately
-            try
-            {
-                // Simple single-pass preview setup
-                PreviewUtilities.SetupPreview(previewContainer);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Failed to initialize preview: {ex.Message}");
-                previewInitialized = false;
-            }                // Flexible spacer to push the controls panel to the right edge regardless of preview size
+                // Setup preview immediately using centralized utilities
+                try { PreviewHierarchyUtilities.SetupPreviewWithBorder(previewContainer, ref previewBorder, ref previewInitialized); }
+                catch (Exception ex) { Debug.LogError($"Failed to initialize preview: {ex.Message}"); previewInitialized = false; }
+
+                // Spacer to push controls to the right
                 var spacer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, null, false);
-                var spacerLE = spacer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? spacer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
-                spacerLE.flexibleWidth = 1f;
-                spacerLE.minWidth = 0f;
-                spacerLE.preferredWidth = 0f;
+                var spacerLE = spacer.gameObject.GetComponent<LayoutElement>() ?? spacer.gameObject.AddComponent<LayoutElement>();
+                spacerLE.flexibleWidth = 1f; spacerLE.minWidth = 0f; spacerLE.preferredWidth = 0f;
 
                 CreateNestedVertical(toolsContainer, 20f, null, TextAnchor.UpperLeft, controlsContainer =>
                 {
-                    // Fix controls panel width so it doesn't stretch and remains aligned right
-                    var le = controlsContainer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? controlsContainer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
-                    le.preferredWidth = 390f;
-                    le.flexibleWidth = 0f;
+                    var le = controlsContainer.gameObject.GetComponent<LayoutElement>() ?? controlsContainer.gameObject.AddComponent<LayoutElement>();
+                    le.preferredWidth = 390f; le.flexibleWidth = 0f;
 
                     Builder.CreateLabel(controlsContainer, 390, 36, 0, 0, "Visuals");
 
-                    // Compact toggles arranged in two columns (2x2 grid)
                     CreateNestedHorizontal(controlsContainer, 12f, null, TextAnchor.UpperLeft, cols =>
                     {
-                        // Left column
                         CreateNestedVertical(cols, 14f, null, TextAnchor.UpperLeft, leftCol =>
                         {
                             UIUtilities.CreateCompactToggle(leftCol, "Background", () => World.OwnerInstance?.showBackground ?? true, () =>
                             {   // Toggle background and update visibility
                                 ref Captue owner = ref World.OwnerInstance;
-                                if (owner != null)
-                                {
-                                    owner.showBackground = !owner.showBackground;
-                                    UpdateBackgroundWindowVisibility();
-                                }
+                                if (owner != null) { owner.showBackground = !owner.showBackground; UpdateBackgroundWindowVisibility(); }
                             });
 
                             UIUtilities.CreateCompactToggle(leftCol, "Interiors", () => SFS.InteriorManager.main?.interiorView?.Value ?? true, () =>
-                            {   // Toggle global interior visibility using the game's InteriorManager
+                            {   // Toggle global interior visibility
                                 CaptureUtilities.ToggleInteriorView();
                             });
                         });
 
-                        // Right column
                         CreateNestedVertical(cols, 14f, null, TextAnchor.UpperLeft, rightCol =>
                         {
                             UIUtilities.CreateCompactToggle(rightCol, "Terrain", () => World.OwnerInstance?.showTerrain ?? true, () =>
@@ -205,12 +184,7 @@ namespace ScreenCapture
                             {   // Show/hide rockets window
                                 ref Captue owner = ref World.OwnerInstance;
                                 if (owner != null)
-                                {
-                                    ref var rocketWindow = ref owner.rocketsWindow;
-                                    CaptureUtilities.ShowHideWindow<RocketsUI>(ref rocketWindow,
-                                        () => { },
-                                        () => { });
-                                }
+                                {   ref var rocketWindow = ref owner.rocketsWindow; CaptureUtilities.ShowHideWindow<RocketsUI>(ref rocketWindow, () => { }, () => { }); }
                             });
                         });
                     });
@@ -221,7 +195,7 @@ namespace ScreenCapture
                         {   // Unified crop change handler with preview update
                             RefreshLayoutForCroppedPreview();
                             UpdateEstimatesUI();
-                            RequestPreviewUpdate();  // Use local method instead of owner method
+                            RequestPreviewUpdate();
                         });
                     });
                 });
@@ -232,8 +206,7 @@ namespace ScreenCapture
         {   // Create capture controls and show estimates above them
             var MainCol = CreateVerticalContainer(window, 8f, null, TextAnchor.LowerLeft);
 
-            var controls = CreateNestedContainer(MainCol,
-                SFS.UI.ModGUI.Type.Horizontal, TextAnchor.LowerLeft, 30f, null, true);
+            var controls = CreateNestedContainer(MainCol, SFS.UI.ModGUI.Type.Horizontal, TextAnchor.LowerLeft, 30f, null, true);
 
             CreateNestedVertical(controls, 5f, null, TextAnchor.LowerLeft, leftRow =>
             {
@@ -251,54 +224,39 @@ namespace ScreenCapture
             var ZoomRow = CreateNestedVertical(controls, 5f, null, TextAnchor.UpperLeft);
             CreateZoomControls(ZoomRow);
 
-            CreateNestedHorizontal(MainCol,     103f, null, TextAnchor.UpperLeft, helpRow =>
+            CreateNestedHorizontal(MainCol, 103f, null, TextAnchor.UpperLeft, helpRow =>
             {
                 CreateNestedVertical(helpRow, 5f, null, TextAnchor.UpperLeft, helpCol =>
                 {
                     CreateNestedHorizontal(helpCol, 10f, null, TextAnchor.UpperLeft, statsRow1 =>
-                    {
-                        resLabel = Builder.CreateLabel(statsRow1, 210, 34, 0, 0, "Res: -");
-                        gpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "GPU: -");
-                        cpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "RAM: -");
-                    });
+                    { resLabel = Builder.CreateLabel(statsRow1, 210, 34, 0, 0, "Res: -"); gpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "GPU: -"); cpuLabel = Builder.CreateLabel(statsRow1, 170, 34, 0, 0, "RAM: -"); });
 
                     CreateNestedHorizontal(helpCol, 10f, null, TextAnchor.UpperLeft, statsRow2 =>
-                    {
-                        pngLabel = Builder.CreateLabel(statsRow2, 170, 34, 0, 0, "PNG: -");
-                        maxLabel = Builder.CreateLabel(statsRow2, 220, 34, 0, 0, "Max Width: -");
-                        // warnLabel = Builder.CreateLabel(statsRow2, 400, 34, 0, 0, "");
-                        // warnLabel.Color = new Color(1f, 0.35f, 0.2f);
-                    });
-
+                    { pngLabel = Builder.CreateLabel(statsRow2, 170, 34, 0, 0, "PNG: -"); maxLabel = Builder.CreateLabel(statsRow2, 220, 34, 0, 0, "Max Width: -"); });
                 });
 
                 CreateNestedHorizontal(helpRow, 10f, null, TextAnchor.UpperLeft, bottomRow =>
-                {
-                    Builder.CreateButton(bottomRow, 285, 58, 0, 0, () => FileUtilities.OpenCurrentWorldCapturesFolder(), "Open Captures");
-                });
+                { Builder.CreateButton(bottomRow, 285, 58, 0, 0, () => FileUtilities.OpenCurrentWorldCapturesFolder(), "Open Captures"); });
             });
-
-
 
             return controls;
         }
 
         private void CreateZoomControls(Container ZoomRow)
         {
-            float GetZoom() => Mathf.Clamp(PreviewZoom, 0.25f, 4f);  // Button/display factor in safe range
-            float GetLevel() => PreviewZoomLevel;  // Unbounded level for input
+            float GetZoom() => Mathf.Clamp(PreviewZoom, 0.25f, 4f);
+            float GetLevel() => PreviewZoomLevel;
 
             void SetZoom(float z)
             {   // Set zoom and update level based on factor with preview refresh
                 PreviewZoom = z;
                 PreviewZoomLevel = Mathf.Log(z);
-                RequestPreviewUpdate();  // Use local method instead of owner method
+                RequestPreviewUpdate();
             }
 
             float StepInLog(float z, int dir)
             {   // Compute next zoom via log-space lerp across [0.25, 4] using discrete steps
-                float min = 0.25f, max = 4f;
-                int steps = 20;
+                float min = 0.25f, max = 4f; int steps = 20;
                 float lnMin = Mathf.Log(min), lnMax = Mathf.Log(max);
                 float t = Mathf.InverseLerp(lnMin, lnMax, Mathf.Log(Mathf.Clamp(z, min, max)));
                 int i = Mathf.Clamp(Mathf.RoundToInt(t * steps) + dir, 0, steps);
@@ -309,379 +267,25 @@ namespace ScreenCapture
             InputWithLabel zoomInput = null;
             zoomInput = Builder.CreateInputWithLabel(ZoomRow, (140 * 2 + 10), 52, 0, 0, "Zoom", $"{GetLevel():0.00}", val =>
             {   // Parse unbounded zoom level from input
-                if (string.IsNullOrWhiteSpace(val))
-                    return;
+                if (string.IsNullOrWhiteSpace(val)) return;
 
                 if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float lvl))
-                {
-                    PreviewZoomLevel = lvl;
-                    zoomInput.textInput.Text = $"{GetLevel():0.00}";
-                    UpdateEstimatesUI();
-                    RequestPreviewUpdate();  // Use local method instead of owner method
-                }
+                {   PreviewZoomLevel = lvl; zoomInput.textInput.Text = $"{GetLevel():0.00}"; UpdateEstimatesUI(); RequestPreviewUpdate(); }
             });
 
             var bottomRow = CreateNestedHorizontal(ZoomRow, 10f, null, TextAnchor.MiddleLeft);
 
             Builder.CreateButton(bottomRow, 140, 58, 0, 0, () =>
             {   // Decrease zoom using non-linear step
-                float z = StepInLog(GetZoom(), -1);
-                SetZoom(z);
-                zoomInput.textInput.Text = $"{GetLevel():0.00}";
-                UpdateEstimatesUI();
+                float z = StepInLog(GetZoom(), -1); SetZoom(z); zoomInput.textInput.Text = $"{GetLevel():0.00}"; UpdateEstimatesUI();
             }, "Zoom -");
 
             Builder.CreateButton(bottomRow, 140, 58, 0, 0, () =>
             {   // Increase zoom using non-linear step
-                float z = StepInLog(GetZoom(), +1);
-                SetZoom(z);
-                zoomInput.textInput.Text = $"{GetLevel():0.00}";
-                UpdateEstimatesUI();
+                float z = StepInLog(GetZoom(), +1); SetZoom(z); zoomInput.textInput.Text = $"{GetLevel():0.00}"; UpdateEstimatesUI();
             }, "Zoom +");
         }
 
-        public override void Hide()
-        {   // Tear down UI and related resources for the owner
-            ref Captue ownerRef = ref World.OwnerInstance;
-
-            if (ownerRef == null)
-                return;
-
-            // Unsubscribe from screen size changes
-            Captue.OnScreenSizeChanged -= OnScreenSizeChanged;
-
-            if (window != null && !((UITools.ClosableWindow)window).Minimized)
-                ownerRef.windowCollapsedAction?.Invoke();
-
-            if (World.UIHolder != null)
-            {
-                UnityEngine.Object.Destroy(World.UIHolder);
-                World.UIHolder = null;
-                ownerRef.closableWindow = null;
-                window = null;
-            }
-
-            // Centralized cleanup of UI resources
-            PreviewUtilities.CleanupUI(ownerRef);
-
-            // Hide child windows
-            if (ownerRef.backgroundWindow != null)
-            {
-                ownerRef.backgroundWindow.Hide();
-                ownerRef.backgroundWindow = null;
-            }
-
-            if (ownerRef.rocketsWindow != null)
-            {
-                ownerRef.rocketsWindow.Hide();
-                ownerRef.rocketsWindow = null;
-            }
-
-            resLabel = null; gpuLabel = null; cpuLabel = null; pngLabel = null; maxLabel = null; resInput = null; 
-
-            Captue.PreviewImage = null;
-            previewContainer = null;
-            previewInitialized = false;
-
-            // Destroy preview border if present
-            if (previewBorder != null)
-            {
-                try { UnityEngine.Object.Destroy(previewBorder.gameObject); } catch { }
-                previewBorder = null;
-            }
-
-            GameObject existing = GameObject.Find("SFSRecorder");
-            if (existing != null)
-                UnityEngine.Object.Destroy(existing);
-
-            // Do not null the global OwnerInstance here; it is a persistent component
-            // ownerRef = null;
-        }
-
-        public void UpdateBackgroundWindowVisibility()
-        {   // Show background settings window when "Show Background" is off
-            ref Captue ownerRef = ref World.OwnerInstance;
-            
-            // Prevent showing background window if main UI is hidden or being destroyed
-            if (ownerRef == null || window == null || World.UIHolder == null)
-                return;
-
-            // Only show background window when background is disabled and main window isn't minimized
-            bool shouldShow = !ownerRef.showBackground && !((UITools.ClosableWindow)window).Minimized;
-
-            if (shouldShow && ownerRef.backgroundWindow == null)
-                ownerRef.backgroundWindow = new BackgroundUI();
-
-            if (shouldShow && !ownerRef.backgroundWindow.IsOpen)
-                ownerRef.backgroundWindow.Show();
-            else if (!shouldShow && ownerRef.backgroundWindow != null)
-            {   // Hide background window when no longer needed
-                ownerRef.backgroundWindow.Hide();
-                ownerRef.backgroundWindow = null;
-            }
-        }
-
-        private void EnsurePreviewSetup()
-        {   // Lazily initialize the preview when window is opened
-            if (previewInitialized || previewContainer == null)
-                return;
-
-            try
-            {
-                // Simple single-pass preview setup
-                SetupPreview(previewContainer);
-                
-                // Immediately apply proper scaling and update after setup
-                RequestPreviewUpdate();
-                
-                Debug.Log("Preview setup completed successfully");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Failed to setup preview: {ex.Message}");
-            }
-        }
-
-        public void UpdateEstimatesUI()
-        {   // Refresh estimate labels with aggressive throttling and normalized crop usage
-            ref Captue ownerRef = ref World.OwnerInstance;
-            if (ownerRef == null)
-                return;
-
-            // Skip updates when window is minimized to save performance
-            if (window != null && ((UITools.ClosableWindow)window).Minimized)
-                return;
-
-            if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null)
-                return;
-
-            // More aggressive throttling to reduce CPU usage
-            float currentTime = Time.unscaledTime;
-            if (currentTime - lastUpdateTime < UPDATE_INTERVAL && lastEstimateWidth == ResolutionWidth)
-                return;
-
-            lastUpdateTime = currentTime;
-            lastEstimateWidth = ResolutionWidth;
-
-            var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
-
-            float cropWidthFactor = 1f - leftCrop - rightCrop;
-            float cropHeightFactor = 1f - topCrop - bottomCrop;
-
-            int targetWidth = ResolutionWidth;
-            int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
-            int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
-            int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
-
-            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-            var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
-
-            // Calculate max safe width accounting for crop
-            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
-            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
-
-            float gpuUsage = gpuBudget > 0 ? (float)gpuNeed / gpuBudget : 0f;
-            float cpuUsage = cpuBudget > 0 ? (float)cpuNeed / cpuBudget : 0f;
-
-            resLabel.Text = $"Res: {targetWidth}x{targetHeight}";
-            gpuLabel.Text = $"GPU: {CaptureUtilities.FormatMB(gpuNeed)}";
-            cpuLabel.Text = $"RAM: {CaptureUtilities.FormatMB(cpuNeed)}";
-            pngLabel.Text = $"PNG: {CaptureUtilities.FormatMB((long)Math.Max(1024, rawBytes * 0.30))}";
-            maxLabel.Text = $"Max Width: {maxSafeTargetWidth}";
-
-            Color ok = Color.white;
-            Color warn = new Color(1f, 0.8f, 0.25f);
-            Color danger = new Color(1f, 0.35f, 0.2f);
-
-            gpuLabel.Color = gpuUsage >= 1f ? danger : (gpuUsage >= 0.8f ? warn : ok);
-            cpuLabel.Color = cpuUsage >= 1f ? danger : (cpuUsage >= 0.8f ? warn : ok);
-            resLabel.Color = (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok);
-
-            SetTextInputColor(resInput, (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok));
-        }
-
-        public void RequestPreviewUpdate()
-        {   // Request preview update without viewport cropping to prevent stretching
-            if (World.PreviewCamera == null || Captue.PreviewRT == null)
-                return;
-
-            ref Captue owner = ref World.OwnerInstance;
-            if (owner == null)
-                return;
-
-            World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
-            World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
-            World.PreviewCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
-            CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
-
-            var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
-            var prevTarget = World.PreviewCamera.targetTexture;
-
-            World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
-            World.PreviewCamera.targetTexture = Captue.PreviewRT;
-            World.PreviewCamera.Render();
-            World.PreviewCamera.targetTexture = prevTarget;
-
-            CaptureUtilities.RestoreSceneVisibility(modified);
-
-            // Update RawImage layout first, then make border/parent follow image size
-            PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
-            if (Captue.PreviewImage != null) UpdatePreviewBorderSize();
-        }
-
-        private void OnScreenSizeChanged()
-        {   // Handle screen size changes by updating UI elements and clamping resolution if needed
-            if (resInput == null)
-                return;
-
-            // Calculate crop factors for new screen size
-            float leftCrop = CropLeft / 100f;
-            float rightCrop = CropRight / 100f;
-            float totalHorizontal = leftCrop + rightCrop;
-
-            if (totalHorizontal >= 1f)
-            {
-                float scale = 0.99f / totalHorizontal;
-                leftCrop *= scale;
-                rightCrop *= scale;
-            }
-
-            float cropWidthFactor = 1f - leftCrop - rightCrop;
-            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
-            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
-
-            // Clamp current resolution if it exceeds new max
-            if (ResolutionWidth > maxSafeTargetWidth)
-            {
-                ResolutionWidth = maxSafeTargetWidth;
-                resInput.Text = ResolutionWidth.ToString();
-            }
-
-            // Update estimates to reflect new screen dimensions
-            UpdateEstimatesUI();
-
-            // Refresh preview layout for new screen size and trigger update
-            RefreshLayoutForCroppedPreview();
-            RequestPreviewUpdate();
-        }
-
-        public override void Refresh()
-        {   // Refresh UI with current values
-            if (window == null)
-                return;
-
-            Hide();
-            Show();
-        }
-
-        private void StartWindowColorAnimation(bool success = true)
-        {   // Start coroutine to animate window background color based on save result
-            if (window != null && World.UIHolder != null)
-            {
-                // Stop any current animation before starting new one
-                if (currentAnimation != null)
-                {
-                    var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                    if (monoBehaviour != null)
-                        monoBehaviour.StopCoroutine(currentAnimation);
-                    currentAnimation = null;
-                }
-
-                var monoBehaviour2 = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                if (monoBehaviour2 != null)
-                    currentAnimation = monoBehaviour2.StartCoroutine(AnimateWindowColor(success));
-            }
-        }
-
-        private IEnumerator AnimateWindowColor(bool success = true)
-        {   // Animate window background using sine wave over 0.8 seconds with result-based color
-            var closableWindow = window as UITools.ClosableWindow;
-            if (closableWindow == null)
-                yield break;
-
-            // Find any graphic component to animate
-            var graphics = closableWindow.gameObject.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
-            var targetGraphic = graphics.FirstOrDefault(g =>
-                g.name.ToLower().Contains("back") ||
-                g.name.ToLower().Contains("background") ||
-                g.name.ToLower().Contains("game"));
-
-            if (targetGraphic == null && graphics.Length > 0)
-                targetGraphic = graphics[0];
-
-            if (targetGraphic == null)
-            {
-                Debug.LogWarning("Could not find background component to animate");
-                yield break;
-            }
-
-            Color originalColor = targetGraphic.color;
-            Color effectColor = success ?
-                new Color(0.0018f, 0.6902f, 0.0804f, 1f) :  // Green for success
-                new Color(0.8f, 0.1f, 0.1f, 1f);           // Red for failure
-
-            float duration = 0.8f;
-            float elapsed = 0f;
-
-            while (elapsed < duration)
-            {   // Use sine wave pattern for smooth color transition
-                float t = elapsed / duration;
-                float sineWave = Mathf.Sin(t * Mathf.PI);
-
-                targetGraphic.color = Color.Lerp(originalColor, effectColor, sineWave);
-
-                elapsed += Time.unscaledDeltaTime;
-                yield return null;
-            }
-
-            targetGraphic.color = originalColor;
-        }
-
-        private IEnumerator DelayedAnimation(bool success = true)
-        {   // Wait for game to settle then show save result animation
-            yield return new WaitForSecondsRealtime(0.15f);
-            StartWindowColorAnimation(success);
-        }
-
-        private IEnumerator VerifyAndShowResult(string worldFolderPath, string fileName, byte[] pngBytes, int renderWidth, int outWidth, int outHeight)
-        {   // Wait for file system to flush, verify save, then show result with delay
-            yield return new WaitForSecondsRealtime(0.1f);
-
-            string fullPath = Path.Combine(worldFolderPath, fileName);
-            bool saveSuccess = false;
-
-            try
-            {
-                if (File.Exists(fullPath))
-                {
-                    var fileInfo = new FileInfo(fullPath);
-                    if (fileInfo.Length > 0 && fileInfo.Length == pngBytes.Length)
-                    {
-                        saveSuccess = true;
-                        var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-                        Debug.Log($"Verified save {outWidth}x{outHeight}. Memory (render): GPU {CaptureUtilities.FormatMB(gpuNeed)}, CPU {CaptureUtilities.FormatMB(cpuNeed)}; file {CaptureUtilities.FormatMB(pngBytes.LongLength)}");
-                    }
-                    else
-                    {
-                        UnityEngine.Debug.LogError($"File size mismatch. Expected: {pngBytes.Length}, Actual: {fileInfo.Length}");
-                        saveSuccess = false;
-                    }
-                }
-                else
-                {
-                    UnityEngine.Debug.LogError("Screenshot file does not exist after save");
-                    saveSuccess = false;
-                }
-            }
-            catch (System.Exception ex)
-            {
-                UnityEngine.Debug.LogError($"File verification failed: {ex.Message}");
-                saveSuccess = false;
-            }
-
-            yield return new WaitForSecondsRealtime(0.1f);
-            StartWindowColorAnimation(saveSuccess);
-        }
 
         public void TakeScreenshot()
         {   // Capture and save a screenshot at the specified resolution and show result animation using normalized crop values
@@ -837,7 +441,7 @@ namespace ScreenCapture
                 {
                     var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
                     if (monoBehaviour != null)
-                        monoBehaviour.StartCoroutine(VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, targetWidth, targetHeight));
+                        monoBehaviour.StartCoroutine(FileUtilities.VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, targetWidth, targetHeight, new System.Action<bool>(StartWindowColorAnimation)));
                 }
 
                 var (finalGpuNeed, finalCpuNeed, finalRawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
@@ -867,365 +471,167 @@ namespace ScreenCapture
                     UnityEngine.Object.Destroy(finalTex);
             }
         }
+        public override void Hide()
+        {   // Tear down UI and related resources for the owner
+            ref Captue ownerRef = ref World.OwnerInstance;
+            if (ownerRef == null) return;
+
+            Captue.OnScreenSizeChanged -= OnScreenSizeChanged;
+
+            if (window != null && !((UITools.ClosableWindow)window).Minimized)
+                ownerRef.windowCollapsedAction?.Invoke();
+
+            if (World.UIHolder != null)
+            { UnityEngine.Object.Destroy(World.UIHolder); World.UIHolder = null; ownerRef.closableWindow = null; window = null; }
+
+            PreviewUtilities.CleanupUI(ownerRef);
+
+            if (ownerRef.backgroundWindow != null)
+            { ownerRef.backgroundWindow.Hide(); ownerRef.backgroundWindow = null; }
+
+            if (ownerRef.rocketsWindow != null)
+            { ownerRef.rocketsWindow.Hide(); ownerRef.rocketsWindow = null; }
+
+            resLabel = null; gpuLabel = null; cpuLabel = null; pngLabel = null; maxLabel = null; resInput = null;
+
+            Captue.PreviewImage = null; previewContainer = null; previewInitialized = false;
+
+            if (previewBorder != null)
+            { try { UnityEngine.Object.Destroy(previewBorder.gameObject); } catch { } previewBorder = null; }
+
+            GameObject existing = GameObject.Find("SFSRecorder");
+            if (existing != null) UnityEngine.Object.Destroy(existing);
+        }
+
+        public void UpdateBackgroundWindowVisibility()
+        {   // Show background settings window when "Show Background" is off
+            ref Captue ownerRef = ref World.OwnerInstance;
+            if (ownerRef == null || window == null || World.UIHolder == null) return;
+
+            bool shouldShow = !ownerRef.showBackground && !((UITools.ClosableWindow)window).Minimized;
+
+            if (shouldShow && ownerRef.backgroundWindow == null) ownerRef.backgroundWindow = new BackgroundUI();
+
+            if (shouldShow && !ownerRef.backgroundWindow.IsOpen) ownerRef.backgroundWindow.Show();
+            else if (!shouldShow && ownerRef.backgroundWindow != null) { ownerRef.backgroundWindow.Hide(); ownerRef.backgroundWindow = null; }
+        }
+
+        private void EnsurePreviewSetup()
+        {   // Lazily initialize the preview when window is opened
+            if (previewInitialized || previewContainer == null) return;
+
+            try
+            {   PreviewHierarchyUtilities.SetupPreviewWithBorder(previewContainer, ref previewBorder, ref previewInitialized); RequestPreviewUpdate(); }
+            catch (Exception ex) { Debug.LogError($"Failed to setup preview: {ex.Message}"); }
+        }
+
+        public void UpdateEstimatesUI()
+        {   // Refresh estimate labels with aggressive throttling and normalized crop usage
+            ref Captue ownerRef = ref World.OwnerInstance;
+            if (ownerRef == null) return;
+
+            if (window != null && ((UITools.ClosableWindow)window).Minimized) return;
+            if (resLabel == null || gpuLabel == null || cpuLabel == null || pngLabel == null || maxLabel == null) return;
+
+            float currentTime = Time.unscaledTime;
+            if (currentTime - lastUpdateTime < UPDATE_INTERVAL && lastEstimateWidth == ResolutionWidth) return;
+
+            lastUpdateTime = currentTime; lastEstimateWidth = ResolutionWidth;
+
+            var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
+            float cropWidthFactor = 1f - leftCrop - rightCrop; float cropHeightFactor = 1f - topCrop - bottomCrop;
+
+            int targetWidth = ResolutionWidth;
+            int targetHeight = Mathf.RoundToInt(targetWidth * (float)Screen.height / (float)Screen.width * (cropHeightFactor / Mathf.Max(0.0001f, cropWidthFactor)));
+            int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
+            int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
+
+            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
+            var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
+
+            int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
+            int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
+
+            float gpuUsage = gpuBudget > 0 ? (float)gpuNeed / gpuBudget : 0f;
+            float cpuUsage = cpuBudget > 0 ? (float)cpuNeed / cpuBudget : 0f;
+
+            resLabel.Text = $"Res: {targetWidth}x{targetHeight}";
+            gpuLabel.Text = $"GPU: {CaptureUtilities.FormatMB(gpuNeed)}";
+            cpuLabel.Text = $"RAM: {CaptureUtilities.FormatMB(cpuNeed)}";
+            pngLabel.Text = $"PNG: {CaptureUtilities.FormatMB((long)Math.Max(1024, rawBytes * 0.30))}";
+            maxLabel.Text = $"Max Width: {maxSafeTargetWidth}";
+
+            Color ok = Color.white; Color warn = new Color(1f, 0.8f, 0.25f); Color danger = new Color(1f, 0.35f, 0.2f);
+            gpuLabel.Color = gpuUsage >= 1f ? danger : (gpuUsage >= 0.8f ? warn : ok);
+            cpuLabel.Color = cpuUsage >= 1f ? danger : (cpuUsage >= 0.8f ? warn : ok);
+            resLabel.Color = (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok);
+            SetTextInputColor(resInput, (gpuUsage >= 1f || cpuUsage >= 1f) ? danger : ((gpuUsage >= 0.8f || cpuUsage >= 0.8f) ? warn : ok));
+        }
+
+        public void RequestPreviewUpdate()
+        {   // Request preview update without viewport cropping to prevent stretching
+            if (World.PreviewCamera == null || Captue.PreviewRT == null) return;
+
+            ref Captue owner = ref World.OwnerInstance; if (owner == null) return;
+
+            World.PreviewCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
+            World.PreviewCamera.clearFlags = CameraClearFlags.SolidColor;
+            World.PreviewCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
+            CaptureUtilities.ApplyPreviewZoom(World.MainCamera, World.PreviewCamera, PreviewZoomLevel);
+
+            var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
+            var prevTarget = World.PreviewCamera.targetTexture;
+
+            World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
+            World.PreviewCamera.targetTexture = Captue.PreviewRT; World.PreviewCamera.Render(); World.PreviewCamera.targetTexture = prevTarget;
+            CaptureUtilities.RestoreSceneVisibility(modified);
+
+            PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
+            if (Captue.PreviewImage != null) UpdatePreviewBorderSize();
+        }
+
+        private void StartWindowColorAnimation(bool success = true)
+        {   // Start coroutine to animate window background color based on save result
+            if (window == null || World.UIHolder == null) return;
+
+            if (currentAnimation != null)
+            {   var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>(); if (monoBehaviour != null) monoBehaviour.StopCoroutine(currentAnimation); currentAnimation = null; }
+
+            var mono2 = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
+            if (mono2 != null && window is UITools.ClosableWindow closable)
+                currentAnimation = mono2.StartCoroutine(AnimationUtilities.AnimateWindowColor(closable, success));
+        }
 
         public void RefreshLayoutForCroppedPreview()
         {   // Force layout refresh to handle cropped preview changes
-            if (previewContainer == null || window == null || Captue.PreviewImage == null)
-                return;
+            if (previewContainer == null || window == null || Captue.PreviewImage == null) return;
 
-            // Give the layout system time to update
             if (currentAnimation != null)
-            {
-                var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                if (monoBehaviour != null)
-                    monoBehaviour.StopCoroutine(currentAnimation);
-                currentAnimation = null;
-            }
-
-            // Start a coroutine to update layouts after a short delay
-            if (World.UIHolder != null)
-            {
-                var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                if (monoBehaviour != null)
-                    currentAnimation = monoBehaviour.StartCoroutine(DelayedLayoutRefresh());
-            }
-        }
-
-        private IEnumerator DelayedLayoutRefresh()
-        {   // Wait a frame then refresh layouts to ensure proper rendering
-            yield return null; // Wait a frame
-
-            if (previewContainer != null)
-            {
-                // Force immediate layout recalculation
-                LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform);
-
-                // Refresh parent layouts too
-                if (previewContainer.rectTransform.parent != null)
-                    LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform.parent as RectTransform);
-
-                // Update RawImage size from current RT and crop, then sync border and parent
-                PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
-
-                if (Captue.PreviewImage?.rectTransform != null)
-                {
-                    var imgSize = Captue.PreviewImage.rectTransform.sizeDelta;
-                    var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
-                    parentLayout.preferredHeight = imgSize.y + 12f;
-                    parentLayout.minHeight = imgSize.y + 12f;
-                }
-
-                // Update border to match new image size
-                UpdatePreviewBorderSize();
-            }
-
-            // Re-render the preview with cropping applied
-            if (World.PreviewCamera != null && Captue.PreviewRT != null)
-            {
-                World.PreviewCamera.targetTexture = Captue.PreviewRT;
-                World.PreviewCamera.Render();
-            }
-        }
-
-        private void UpdatePreviewBorderSize()
-        {   // Size border to match RawImage and apply UV cropping; image drives the box
-            if (previewContainer == null || Captue.PreviewImage == null || previewBorder == null)
-                return;
-
-            try
-            {
-                var imageRect = Captue.PreviewImage.rectTransform;
-                var borderRect = previewBorder.gameObject.GetComponent<RectTransform>();
-                if (imageRect == null || borderRect == null)
-                    return;
-
-                // Ensure image is laid out according to RT+crop and then mirror size to border
-                PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
-                var imgSize = imageRect.sizeDelta;
-                borderRect.sizeDelta = imgSize;
-
-                // UV cropping directly from normalized values
-                var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
-                float uvLeft = leftCrop;
-                float uvBottom = bottomCrop;
-                float uvWidth = 1f - leftCrop - rightCrop;
-                float uvHeight = 1f - topCrop - bottomCrop;
-
-                // Safety clamp to texture bounds
-                if (uvLeft + uvWidth > 1f) uvWidth = 1f - uvLeft;
-                if (uvBottom + uvHeight > 1f) uvHeight = 1f - uvBottom;
-
-                try { Captue.PreviewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); } catch { }
-
-                if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
-                    Captue.PreviewImage.texture = Captue.PreviewRT;
-
-                // Update parent layout to follow border height
-                var parentLayout = previewContainer.gameObject.GetComponent<LayoutElement>() ?? previewContainer.gameObject.AddComponent<LayoutElement>();
-                parentLayout.preferredHeight = imgSize.y + 12f;
-                parentLayout.minHeight = imgSize.y + 12f;
-            }
-            catch (Exception ex)
-            {   // Log but prevent UI errors from bubbling up
-                Debug.LogWarning($"Could not update preview border size: {ex.Message}");
-            }
-        }
-
-        private void SetupPreview(Container parent)
-        {   // Create preview image first with border sized exactly by RawImage size (RT+crop)
-            if (parent == null)
-                return;
-
-            DisableRaycastsInChildren(parent.gameObject);
-
-            // Create RawImage if missing directly under the provided container
-            if (Captue.PreviewImage == null)
-            {
-                PreviewUtilities.SetupPreview(parent);
-            }
-
-            // Size image from current RT and crop, then create border to match
-            PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
-            var imgSize = Captue.PreviewImage?.rectTransform != null ? Captue.PreviewImage.rectTransform.sizeDelta : new Vector2(520f, 430f);
-
-            previewBorder = Builder.CreateBox(parent, Mathf.RoundToInt(imgSize.x), Mathf.RoundToInt(imgSize.y), 0, 0, 0.2f);
-            previewBorder.Color = new Color(0.4f, 0.48f, 0.6f, 0.6f);
-
-            var borderGO = previewBorder.gameObject;
-            borderGO.layer = parent.gameObject.layer;
-
-            var mask = borderGO.GetComponent<RectMask2D>();
-            if (mask == null) mask = borderGO.AddComponent<RectMask2D>();
-
-            if (Captue.PreviewImage != null)
-            {   // Parent image to border and fill exactly
-                Captue.PreviewImage.transform.SetParent(borderGO.transform, false);
-                Captue.PreviewImage.gameObject.layer = borderGO.layer;
-
-                var imageRect = Captue.PreviewImage.rectTransform;
-                imageRect.anchorMin = Vector2.zero;
-                imageRect.anchorMax = Vector2.one;
-                imageRect.pivot = new Vector2(0.5f, 0.5f);
-                imageRect.sizeDelta = Vector2.zero;
-                imageRect.anchoredPosition = Vector2.zero;
-                imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
-
-                var imgLE = Captue.PreviewImage.gameObject.GetComponent<LayoutElement>() ??
-                            Captue.PreviewImage.gameObject.AddComponent<LayoutElement>();
-                imgLE.ignoreLayout = true;
-
-                Captue.PreviewImage.raycastTarget = false;
-
-                // Ensure RT assigned
-                if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
-                    Captue.PreviewImage.texture = Captue.PreviewRT;
-            }
-
-            ForceWindowHierarchyCompliance(borderGO);
+            {   var mono = World.UIHolder.GetComponentInChildren<MonoBehaviour>(); if (mono != null) mono.StopCoroutine(currentAnimation); currentAnimation = null; }
 
             if (World.UIHolder != null)
-            {   // Start visibility sync
-                var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                if (monoBehaviour != null)
-                    monoBehaviour.StartCoroutine(SyncPreviewVisibility(borderGO));
-            }
-
-            var le = parent.gameObject.GetComponent<LayoutElement>() ?? parent.gameObject.AddComponent<LayoutElement>();
-            le.preferredWidth = 520f;
-            le.minWidth = 520f;
-            le.flexibleWidth = 0f;
-            le.preferredHeight = imgSize.y + 12f;
-            le.minHeight = imgSize.y + 12f;
-
-            previewInitialized = true;
-            Debug.Log($"Preview setup: Image {imgSize.x}x{imgSize.y}");
+            {   var mono = World.UIHolder.GetComponentInChildren<MonoBehaviour>(); if (mono != null) currentAnimation = mono.StartCoroutine(AnimationUtilities.DelayedLayoutRefresh(previewContainer, () => UpdatePreviewBorderSize())); }
         }
 
-        private void ForceWindowHierarchyCompliance(GameObject borderGO)
-        {   // Ensure preview follows window visibility and is properly constrained within border
-            if (borderGO == null || window == null)
-                return;
+        private void UpdatePreviewBorderSize() =>
+            PreviewHierarchyUtilities.UpdatePreviewBorderSize(previewContainer, previewBorder);
 
-            // Remove all Canvas components in preview hierarchy to prevent independent rendering
-            var allComponents = borderGO.GetComponentsInChildren<UnityEngine.Component>(true)
-                .Where(c => c != null && c.GetType().Name == "Canvas")
-                .ToArray();
-            foreach (var canvas in allComponents)
-            {
-                try { UnityEngine.Object.Destroy(canvas); } catch { }
-            }
+        private void OnScreenSizeChanged()
+        {   // Handle screen size change: clamp resolution and refresh UI/preview
+            if (resInput == null) return;
 
-            // Disable all UI raycasting so preview follows window interaction
-            var allGraphics = borderGO.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
-            foreach (var graphic in allGraphics)
-                graphic.raycastTarget = false;
+            float leftCrop = CropLeft / 100f, rightCrop = CropRight / 100f; float totalH = leftCrop + rightCrop;
+            if (totalH >= 1f) { float s = 0.99f / totalH; leftCrop *= s; rightCrop *= s; }
 
-            // Match layers exactly to ensure same rendering order as window
-            borderGO.layer = window.gameObject.layer;
-            var allChildren = borderGO.GetComponentsInChildren<Transform>(true);
-            foreach (var child in allChildren)
-                child.gameObject.layer = window.gameObject.layer;
+            float cropW = 1f - leftCrop - rightCrop; int maxRenderW = CaptureUtilities.ComputeMaxSafeWidth(); int maxTargetW = Mathf.RoundToInt(maxRenderW * cropW);
+            if (ResolutionWidth > maxTargetW) { ResolutionWidth = maxTargetW; resInput.Text = ResolutionWidth.ToString(); }
 
-            // Ensure image is properly constrained within border
-            if (Captue.PreviewImage != null)
-            {
-                var imageRect = Captue.PreviewImage.rectTransform;
-                if (imageRect != null)
-                {
-                    // Force image to fill border exactly without overflow
-                    imageRect.anchorMin = Vector2.zero;
-                    imageRect.anchorMax = Vector2.one;
-                    imageRect.pivot = new Vector2(0.5f, 0.5f);
-                    imageRect.sizeDelta = Vector2.zero;
-                    imageRect.anchoredPosition = Vector2.zero;
-                    imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
-                    
-                    // Ensure layout doesn't interfere
-                    var imgLE = imageRect.GetComponent<LayoutElement>() ?? imageRect.gameObject.AddComponent<LayoutElement>();
-                    imgLE.ignoreLayout = true;
-
-                    // Reset UVs and ensure texture is preview RT
-                    try { Captue.PreviewImage.uvRect = new Rect(0f, 0f, 1f, 1f); } catch { }
-                    if (Captue.PreviewRT != null && Captue.PreviewImage.texture != Captue.PreviewRT)
-                        Captue.PreviewImage.texture = Captue.PreviewRT;
-
-                    // Disable raycast so image does not block window interactions
-                    Captue.PreviewImage.raycastTarget = false;
-                }
-            }
-
-            // Ensure border has proper clipping mask
-            var mask = borderGO.GetComponent<RectMask2D>() ?? borderGO.AddComponent<RectMask2D>();
-
-            // Ensure preview follows window active state
-            borderGO.gameObject.SetActive(window.gameObject.activeInHierarchy);
+            UpdateEstimatesUI(); RefreshLayoutForCroppedPreview(); RequestPreviewUpdate();
         }
 
-        private IEnumerator SyncPreviewVisibility(GameObject previewBorder)
-        {   // Continuously sync preview visibility with window state to prevent showing when hidden
-            while (previewBorder != null && window != null)
-            {
-                var windowActive = window.gameObject.activeInHierarchy;
-                var windowMinimized = window is UITools.ClosableWindow closable && closable.Minimized;
-                bool shouldShow = windowActive && !windowMinimized;
-
-                if (previewBorder.activeSelf != shouldShow)
-                    previewBorder.SetActive(shouldShow);
-
-                yield return new WaitForSecondsRealtime(0.1f);  // Check 10 times per second
-            }
+        public override void Refresh()
+        {   // Rebuild UI to reflect current state
+            if (window == null) return; Hide(); Show();
         }
-
-        private void DestroyIndependentCanvasComponents(GameObject rootGO)
-        {   // Remove all Canvas components in hierarchy to prevent independent rendering above menu
-            if (rootGO == null)
-                return;
-
-            var allComponents = rootGO.GetComponentsInChildren<UnityEngine.Component>(true)
-                .Where(c => c != null && c.GetType().Name == "Canvas")
-                .ToArray();
-
-            foreach (var canvas in allComponents)
-            {
-                try { UnityEngine.Object.Destroy(canvas); } catch { }
-            }
-
-            // Disable all raycasting to ensure clicks go through to window
-            var allGraphics = rootGO.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
-            foreach (var graphic in allGraphics)
-                graphic.raycastTarget = false;
-
-            // Match window layer exactly
-            if (window != null)
-            {
-                rootGO.layer = window.gameObject.layer;
-                var allChildren = rootGO.GetComponentsInChildren<Transform>(true);
-                foreach (var child in allChildren)
-                    child.gameObject.layer = window.gameObject.layer;
-            }
-        }
-
-        private void UpdatePreviewLayoutImmediate()
-        {   // Recompute sizes and apply to border and image instantly
-            if (previewContainer == null || Captue.PreviewImage == null)
-                return;
-
-            SyncPreviewLayerAndMask();
-            UpdatePreviewBorderSize();
-
-            // Force layout so neighbors update immediately
-            LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform);
-            if (previewContainer.rectTransform.parent != null)
-                LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform.parent as RectTransform);
-        }
-
-        private void SyncPreviewLayerAndMask()
-        {   // Enforce strict window hierarchy so preview follows menu visibility and draw order
-            if (previewContainer == null)
-                return;
-
-            int parentLayer = previewContainer.gameObject.layer;
-
-            if (previewBorder != null)
-            {
-                var borderGO = previewBorder.gameObject;
-                borderGO.layer = parentLayer;
-
-                // Ensure RectMask2D clipping
-                var mask = borderGO.GetComponent<RectMask2D>() ?? borderGO.AddComponent<RectMask2D>();
-
-                // Destroy any Canvas components to prevent override
-                var canvasComponents = borderGO.GetComponents<UnityEngine.Component>()
-                    .Where(c => c.GetType().Name == "Canvas")
-                    .ToArray();
-                foreach (var canvas in canvasComponents)
-                    UnityEngine.Object.Destroy(canvas);
-
-                // Ensure strict parent hierarchy: border -> container -> window
-                if (borderGO.transform.parent != previewContainer.gameObject.transform)
-                    borderGO.transform.SetParent(previewContainer.gameObject.transform, false);
-
-                // Disable independent raycasting and interaction to ensure it follows window behavior
-                var graphics = borderGO.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
-                foreach (var graphic in graphics)
-                    graphic.raycastTarget = false;
-            }
-
-            if (Captue.PreviewImage != null)
-            {
-                var imgGO = Captue.PreviewImage.gameObject;
-                imgGO.layer = parentLayer;
-
-                // Remove any Canvas to prevent override
-                var imgCanvasComponents = imgGO.GetComponents<UnityEngine.Component>()
-                    .Where(c => c.GetType().Name == "Canvas")
-                    .ToArray();
-                foreach (var canvas in imgCanvasComponents)
-                    UnityEngine.Object.Destroy(canvas);
-
-                // Enforce image under border hierarchy: image -> border -> container -> window
-                if (previewBorder != null && imgGO.transform.parent != previewBorder.gameObject.transform)
-                    imgGO.transform.SetParent(previewBorder.gameObject.transform, false);
-
-                // Disable raycasting on preview image so it follows window behavior
-                var imgGraphics = imgGO.GetComponentsInChildren<UnityEngine.UI.Graphic>(true);
-                foreach (var graphic in imgGraphics)
-                    graphic.raycastTarget = false;
-
-                // Ensure transform settings are normalized to avoid scaling issues
-                var imageRect = Captue.PreviewImage.rectTransform;
-                if (imageRect != null)
-                {
-                    imageRect.localScale = Vector3.one * PREVIEW_SCALE_FIX;
-                    imageRect.anchorMin = Vector2.zero;
-                    imageRect.anchorMax = Vector2.one;
-                    imageRect.sizeDelta = Vector2.zero;
-                    imageRect.anchoredPosition = Vector2.zero;
-                    try { Captue.PreviewImage.uvRect = new Rect(0f, 0f, 1f, 1f); } catch { }
-                }
-            }
-        }
-
-
     }
 }

@@ -17,7 +17,6 @@ namespace ScreenCapture
         private static (int width, long gpu, long cpu, long raw) memoryCache = (-1, 0, 0, 0);
         private static (int origW, int origH, int cropW, int cropH) dimensionsCache = (-1, -1, -1, -1);
         private static (float left, float top, float right, float bottom) lastCropValues = (-1, -1, -1, -1);
-        private static int lastScreenW = -1, lastScreenH = -1;
 
         // Additional caching for expensive calculations
         private static (long gpuBudget, long cpuBudget) budgetCache = (-1, -1);
@@ -26,12 +25,10 @@ namespace ScreenCapture
 
         public static void InvalidateMemoryCache() => memoryCache = (-1, 0, 0, 0);
         public static void InvalidateCropCache() => dimensionsCache = (-1, -1, -1, -1);
-        public static void InvalidateBudgetCache() => budgetCache = (-1, -1);
         public static void InvalidateMaxWidthCache() => maxSafeWidthCache = -1;
 
         public static void InvalidateScreenCache()
         {
-            lastScreenW = lastScreenH = -1;
             InvalidateMemoryCache();
             InvalidateCropCache();
             InvalidateMaxWidthCache();
@@ -79,18 +76,6 @@ namespace ScreenCapture
             dimensionsCache = (origW, origH, result.width, result.height);
             lastCropValues = (Main.CropLeft, Main.CropTop, Main.CropRight, Main.CropBottom);
             return result;
-        }
-
-        public static bool IsScreenSizeChanged()
-        {
-            if (lastScreenW != Screen.width || lastScreenH != Screen.height)
-            {
-                lastScreenW = Screen.width;
-                lastScreenH = Screen.height;
-                InvalidateScreenCache();
-                return true;
-            }
-            return false;
         }
     }
 
@@ -167,6 +152,7 @@ namespace ScreenCapture
         public const double GPU_BUDGET_FRACTION = 0.4;
         public const double CPU_BUDGET_FRACTION = 0.4;
     }
+
     public static class CaptureUtilities
     {
         private static readonly System.Collections.Generic.Dictionary<string, (int width, int height)> elementSizeCache =
@@ -949,7 +935,6 @@ namespace ScreenCapture
         }
     }
 
-
     public static class PreviewUtilities
     {
         public static RawImage FitPreviewImageToBox(RawImage previewImage, RenderTexture PreviewRT, float scaleFactor = 1.0f)
@@ -1110,30 +1095,28 @@ namespace ScreenCapture
     public static class CaptureTime
     {
         private static readonly int MaxFrameHistory = 30;
-        private static readonly System.Collections.Generic.List<object> frameHistory = new System.Collections.Generic.List<object>(MaxFrameHistory);
+        private static readonly System.Collections.Generic.List<SFS.World.WorldSave> frameHistory = new System.Collections.Generic.List<SFS.World.WorldSave>(MaxFrameHistory);
         private static int currentFrameIndex = -1;
 
         public static void SaveCurrentFrame()
-        {
+        {   // Create and store world save using reflection to access private CreateWorldSave method
             try
             {
-                var gameManagerType = System.Type.GetType("SFS.World.GameManager, Assembly-CSharp");
-                if (gameManagerType == null) { Debug.LogWarning("GameManager type not found"); return; }
+                if (GameManager.main == null) return;
 
-                var gameManager = UnityEngine.Object.FindObjectOfType(gameManagerType);
-                if (gameManager == null) { Debug.LogWarning("GameManager instance not found"); return; }
+                var createSaveMethod = typeof(GameManager).GetMethod("CreateWorldSave", BindingFlags.NonPublic | BindingFlags.Instance);
+                var worldSave = createSaveMethod?.Invoke(GameManager.main, null) as SFS.World.WorldSave;
+                if (worldSave == null) return;
 
-                var createSaveMethod = gameManagerType.GetMethod("CreateWorldSave", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                if (createSaveMethod == null) { Debug.LogWarning("CreateWorldSave method not found"); return; }
-
-                object worldSave = createSaveMethod.Invoke(gameManager, null);
-                if (worldSave == null) { Debug.LogWarning("Failed to create world save"); return; }
-
+                // Drop forward history if stepping back to maintain linear timeline
                 if (currentFrameIndex >= 0 && currentFrameIndex < frameHistory.Count - 1)
                     frameHistory.RemoveRange(currentFrameIndex + 1, frameHistory.Count - currentFrameIndex - 1);
 
                 frameHistory.Add(worldSave);
-                if (frameHistory.Count > MaxFrameHistory) frameHistory.RemoveAt(0);
+                
+                // Trim to maximum capacity
+                if (frameHistory.Count > MaxFrameHistory)
+                    frameHistory.RemoveRange(0, frameHistory.Count - MaxFrameHistory);
 
                 currentFrameIndex = frameHistory.Count - 1;
                 Debug.Log($"Saved frame {currentFrameIndex + 1}/{frameHistory.Count}");
@@ -1141,266 +1124,94 @@ namespace ScreenCapture
             catch (Exception ex) { Debug.LogError($"Error saving frame: {ex.Message}"); }
         }
 
-        public static void LoadFrame(int index)
-        {
+        public static void LoadFrame(int index, bool saveFirst = true)
+        {   // Load a saved frame by index with optional saving beforehand
             try
             {
-                if (index < 0 || index >= frameHistory.Count) { Debug.LogError($"Invalid frame index: {index}"); return; }
+                if (index < 0 || index >= frameHistory.Count || frameHistory[index] == null) return;
 
-                object worldSave = frameHistory[index];
-                if (worldSave == null) { Debug.LogError("World save is null"); return; }
+                if (saveFirst) SaveCurrentFrame();
 
-                var gameManagerType = System.Type.GetType("SFS.World.GameManager, Assembly-CSharp");
-                var msgDrawerType = System.Type.GetType("SFS.UI.MsgDrawer, Assembly-CSharp");
-
-                if (gameManagerType == null || msgDrawerType == null) { Debug.LogError("Required types not found"); return; }
-
-                var gameManager = UnityEngine.Object.FindObjectOfType(gameManagerType);
-                var msgDrawer = UnityEngine.Object.FindObjectOfType(msgDrawerType);
-
-                if (gameManager == null || msgDrawer == null) { Debug.LogError("Required instances not found"); return; }
-
-                var loadSaveMethod = gameManagerType.GetMethod("LoadSave", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (loadSaveMethod == null) { Debug.LogError("LoadSave method not found"); return; }
-
-                loadSaveMethod.Invoke(gameManager, new[] { worldSave, false, msgDrawer });
+                GameManager.main.LoadSave(frameHistory[index], false, SFS.UI.MsgDrawer.main);
                 currentFrameIndex = index;
                 Time.timeScale = 0f;
-
-                Debug.Log($"Loaded frame {index + 1}/{frameHistory.Count}");
             }
             catch (Exception ex) { Debug.LogError($"Error loading frame: {ex.Message}"); Time.timeScale = 0f; }
         }
 
         public static void StepForwardAndPause()
-        {
+        {   // Save current state then advance time by 0.1s and pause
             try
             {
                 SaveCurrentFrame();
 
-                GameObject helperGo = new GameObject("TimeStepHelper");
+                var helperGo = new GameObject("TimeStepHelper");
                 var helper = helperGo.AddComponent<TimeStepHelper>();
-
-                helper.OnStepComplete = () =>
-                {
-                    UnityEngine.Object.Destroy(helperGo);
-
-                    try
-                    {
-                        var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
-                        if (worldTimeType != null)
-                        {
-                            var mainField = worldTimeType.GetField("main");
-                            var worldTime = mainField?.GetValue(null);
-                            var worldTimeField = worldTimeType?.GetField("worldTime");
-
-                            if (worldTimeField != null && worldTime != null)
-                            {
-                                double currentTime = (double)worldTimeField.GetValue(worldTime);
-                                Debug.Log($"Final time: {currentTime:F2}s");
-                            }
-                        }
-                    }
-                    catch (Exception ex) { Debug.LogWarning($"Error reading time: {ex.Message}"); }
-                };
-
+                
+                helper.OnStepComplete = () => UnityEngine.Object.Destroy(helperGo);
                 helper.ConfigureStep(0.1f, 1, frameHistory);
                 helper.BeginTimeStep();
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Step forward error: {ex.Message}");
-                Time.timeScale = 0f;
-            }
+            catch (Exception ex) { Debug.LogError($"Step forward error: {ex.Message}"); Time.timeScale = 0f; }
         }
 
         public static void StepBackwardInTime()
-        {
+        {   // Step back to previous saved frame without saving current state
             try
             {
                 Time.timeScale = 0f;
-
-                if (frameHistory.Count == 0)
-                {
-                    Debug.Log("No frame history available");
-                    return;
-                }
+                if (frameHistory.Count == 0) return;
 
                 int nextFrameIndex = currentFrameIndex > 0 ? currentFrameIndex - 1 :
                                     currentFrameIndex == 0 ? -1 :
-                                    currentFrameIndex == -1 && frameHistory.Count > 1 ? frameHistory.Count - 2 : -1;
+                                    frameHistory.Count > 1 ? frameHistory.Count - 2 : -1;
 
-                if (nextFrameIndex < 0 || nextFrameIndex >= frameHistory.Count)
-                {
-                    Debug.Log(currentFrameIndex == 0 ? "Already at oldest saved frame" : "No previous frame to step back to");
-                    return;
-                }
+                if (nextFrameIndex < 0 || nextFrameIndex >= frameHistory.Count) return;
 
-                LoadFrameWithoutSave(nextFrameIndex);
-
-                try
-                {
-                    var worldTimeType = System.Type.GetType("SFS.World.WorldTime, Assembly-CSharp");
-                    if (worldTimeType != null)
-                    {
-                        var mainField = worldTimeType.GetField("main");
-                        var worldTime = mainField?.GetValue(null);
-                        var setStateMethod = worldTimeType?.GetMethod("SetState");
-
-                        if (setStateMethod != null && worldTime != null)
-                            setStateMethod.Invoke(worldTime, new object[] { 0.0, true, false });
-
-                        var worldTimeField = worldTimeType?.GetField("worldTime");
-                        if (worldTimeField != null && worldTime != null)
-                        {
-                            double currentTime = (double)worldTimeField.GetValue(worldTime);
-                            Debug.Log($"Current world time after step back: {currentTime:F2}s");
-                        }
-                    }
-                }
-                catch (Exception ex) { Debug.LogWarning($"Error reading time: {ex.Message}"); }
+                LoadFrame(nextFrameIndex, false);
             }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Step back error: {ex.Message}");
-                Time.timeScale = 0f;
-            }
+            catch (Exception ex) { Debug.LogError($"Step back error: {ex.Message}"); Time.timeScale = 0f; }
         }
 
         public static void SaveOnPause()
-        {
-            if (Time.timeScale > 0f)
-            {
-                SaveCurrentFrame();
-                Debug.Log("Saved frame on pause");
-            }
+        {   // Save frame when pausing if time was running
+            if (Time.timeScale > 0f) SaveCurrentFrame();
         }
 
         public static void SaveOnResumeAndUnpause()
-        {
+        {   // Save frame then resume time
             SaveCurrentFrame();
             Time.timeScale = 1f;
-            Debug.Log("Saved frame on resume and unpaused");
-        }
-
-        private static void LoadFrameWithoutSave(int index)
-        {
-            try
-            {
-                if (index < 0 || index >= frameHistory.Count)
-                {
-                    Debug.LogError($"Invalid frame index: {index}");
-                    return;
-                }
-
-                object worldSave = frameHistory[index];
-                if (worldSave == null)
-                {
-                    Debug.LogError("World save is null");
-                    return;
-                }
-
-                var gameManagerType = System.Type.GetType("SFS.World.GameManager, Assembly-CSharp");
-                var msgDrawerType = System.Type.GetType("SFS.UI.MsgDrawer, Assembly-CSharp");
-
-                if (gameManagerType == null || msgDrawerType == null)
-                {
-                    Debug.LogError("Required types not found");
-                    return;
-                }
-
-                var gameManager = UnityEngine.Object.FindObjectOfType(gameManagerType);
-                var msgDrawer = UnityEngine.Object.FindObjectOfType(msgDrawerType);
-
-                if (gameManager == null || msgDrawer == null)
-                {
-                    Debug.LogError("Required instances not found");
-                    return;
-                }
-
-                var loadSaveMethod = gameManagerType.GetMethod("LoadSave", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
-                if (loadSaveMethod == null)
-                {
-                    Debug.LogError("LoadSave method not found");
-                    return;
-                }
-
-                loadSaveMethod.Invoke(gameManager, new[] { worldSave, false, msgDrawer });
-                currentFrameIndex = index;
-                Time.timeScale = 0f;
-
-                Debug.Log($"Loaded frame {index + 1}/{frameHistory.Count} without save");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Error loading frame: {ex.Message}");
-                Time.timeScale = 0f;
-            }
-        }
-
-        public static double ExtractTimeFromSave(object worldSave)
-        {
-            try
-            {
-                var t = worldSave.GetType();
-
-                var timeField = t.GetField("time") ?? t.GetField("worldTime") ?? t.GetField("Time");
-                if (timeField != null)
-                    return (double)Convert.ChangeType(timeField.GetValue(worldSave), typeof(double));
-
-                var gameStateField = t.GetField("gameState") ?? t.GetField("state") ?? t.GetField("worldState");
-                if (gameStateField != null)
-                {
-                    var gameState = gameStateField.GetValue(worldSave);
-                    if (gameState != null)
-                    {
-                        var gt = gameState.GetType();
-                        var gameTimeField = gt.GetField("time") ?? gt.GetField("worldTime") ?? gt.GetField("Time");
-                        if (gameTimeField != null)
-                            return (double)Convert.ChangeType(gameTimeField.GetValue(gameState), typeof(double));
-                    }
-                }
-
-                return currentFrameIndex * 0.1;
-            }
-            catch
-            {
-                return currentFrameIndex * 0.1;
-            }
         }
     }
 
     public class TimeStepHelper : UnityEngine.MonoBehaviour
     {
         public Action OnStepComplete;
-
         private float stepSeconds = 0.1f;
         private int stepsToTake = 1;
         private bool running = false;
-        private System.Collections.Generic.List<object> frameHistoryRef;
 
-        public void ConfigureStep(float stepLength, int steps, System.Collections.Generic.List<object> frameHistory)
-        {
+        public void ConfigureStep(float stepLength, int steps, System.Collections.Generic.List<SFS.World.WorldSave> frameHistory)
+        {   // Configure step parameters with safety bounds
             stepSeconds = Math.Max(0.0001f, stepLength);
             stepsToTake = Math.Max(0, steps);
-            frameHistoryRef = frameHistory;
         }
 
         public void BeginTimeStep()
-        {
-            if (running)
-                return;
-
+        {   // Start the time step coroutine if not already running
+            if (running) return;
+            
             running = true;
             StartCoroutine(RunStepsCoroutine());
         }
 
         private System.Collections.IEnumerator RunStepsCoroutine()
-        {
+        {   // Execute time steps with proper timing control
             if (stepsToTake == 0)
                 yield return null;
             else
-            {
+            {   // Run actual steps with time scale control
                 int actualSteps = Math.Max(1, stepsToTake);
 
                 for (int i = 0; i < actualSteps; i++)
@@ -1408,21 +1219,14 @@ namespace ScreenCapture
                     Time.timeScale = 1f;
                     yield return new UnityEngine.WaitForSecondsRealtime(stepSeconds);
                     Time.timeScale = 0f;
-
                     yield return new UnityEngine.WaitForSecondsRealtime(0.02f);
                 }
             }
 
             running = false;
-
-            try
-            {
-                OnStepComplete?.Invoke();
-            }
-            catch (Exception ex)
-            {
-                UnityEngine.Debug.LogWarning($"TimeStepHelper completion threw: {ex.Message}");
-            }
+            try { OnStepComplete?.Invoke(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning($"TimeStepHelper completion threw: {ex.Message}"); }
         }
     }
+
 }

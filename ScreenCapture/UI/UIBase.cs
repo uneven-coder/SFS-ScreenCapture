@@ -13,7 +13,6 @@ public abstract class UIBase
 
         public bool IsOpen => window != null;
 
-        // Abstract methods to be implemented by each UI component
         public abstract void Show();
         public abstract void Hide();
         public abstract void Refresh();        

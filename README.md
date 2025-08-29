@@ -36,7 +36,6 @@ Zoom in and out.
 
 ### Quality Settings  
 Change screenshot resolution up to system limits to avoid memory issues.  
-![Quality](gifs/quality.gif)
 
 ### Time Controls  
 - **Step Forward**: briefly unpause time  

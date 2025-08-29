@@ -2,6 +2,10 @@
 
 ScreenCapture is a tool for taking very customizable screenshots with controls for background, terrain, rockets, and usefull features like time controll.  
 
+## Example
+<img width="1120" height="455" alt="image" src="https://github.com/user-attachments/assets/198bd6ca-5bfa-4e76-a951-3e193b3c9953" />
+
+
 ## Features
 
 ### Preview  

@@ -13,7 +13,7 @@ using static ScreenCapture.CaptureUtilities;
 
 namespace ScreenCapture
 {
-    public class Main : Mod
+    public class Main : Mod, IUpdatable
     {
         public static int PreviewWidth { get; set; } = 256;
         public static FolderPath ScreenCaptureFolder { get; private set; }

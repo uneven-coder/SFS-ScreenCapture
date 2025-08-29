@@ -470,7 +470,7 @@ namespace ScreenCapture
                 catch (System.Exception ex) { Debug.LogWarning($"Camera quality batch update failed: {ex.Message}"); }
 
                 // Ensure UI layout matches new RT and crop
-                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+                PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
 
                 PreviewImage = PreviewUtilities.FitPreviewImageToBox(PreviewImage, PreviewRT, 1f);
 

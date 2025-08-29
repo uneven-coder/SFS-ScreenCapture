@@ -145,18 +145,16 @@ namespace ScreenCapture
                 previewLE.preferredHeight = -1f; // Let height adjust to content
 
                 // Setup preview immediately
-                try
-                {
-                    // Simple single-pass preview setup
-                    SetupPreview(previewContainer);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogError($"Failed to initialize preview: {ex.Message}");
-                    previewInitialized = false;
-                }
-
-                // Flexible spacer to push the controls panel to the right edge regardless of preview size
+            try
+            {
+                // Simple single-pass preview setup
+                PreviewUtilities.SetupPreview(previewContainer);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"Failed to initialize preview: {ex.Message}");
+                previewInitialized = false;
+            }                // Flexible spacer to push the controls panel to the right edge regardless of preview size
                 var spacer = CreateNestedContainer(toolsContainer, SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 0f, null, false);
                 var spacerLE = spacer.gameObject.GetComponent<UnityEngine.UI.LayoutElement>() ?? spacer.gameObject.AddComponent<UnityEngine.UI.LayoutElement>();
                 spacerLE.flexibleWidth = 1f;
@@ -178,7 +176,7 @@ namespace ScreenCapture
                         // Left column
                         CreateNestedVertical(cols, 14f, null, TextAnchor.UpperLeft, leftCol =>
                         {
-                            CreateCompactToggle(leftCol, "Background", () => World.OwnerInstance?.showBackground ?? true, () =>
+                            UIUtilities.CreateCompactToggle(leftCol, "Background", () => World.OwnerInstance?.showBackground ?? true, () =>
                             {   // Toggle background and update visibility
                                 ref Captue owner = ref World.OwnerInstance;
                                 if (owner != null)
@@ -188,7 +186,7 @@ namespace ScreenCapture
                                 }
                             });
 
-                            CreateCompactToggle(leftCol, "Interiors", () => SFS.InteriorManager.main?.interiorView?.Value ?? true, () =>
+                            UIUtilities.CreateCompactToggle(leftCol, "Interiors", () => SFS.InteriorManager.main?.interiorView?.Value ?? true, () =>
                             {   // Toggle global interior visibility using the game's InteriorManager
                                 CaptureUtilities.ToggleInteriorView();
                             });
@@ -197,13 +195,13 @@ namespace ScreenCapture
                         // Right column
                         CreateNestedVertical(cols, 14f, null, TextAnchor.UpperLeft, rightCol =>
                         {
-                            CreateCompactToggle(rightCol, "Terrain", () => World.OwnerInstance?.showTerrain ?? true, () =>
+                            UIUtilities.CreateCompactToggle(rightCol, "Terrain", () => World.OwnerInstance?.showTerrain ?? true, () =>
                             {   // Toggle terrain visibility
                                 ref Captue owner = ref World.OwnerInstance;
                                 if (owner != null) owner.showTerrain = !owner.showTerrain;
                             });
 
-                            CreateCompactToggle(rightCol, "Rockets", () => World.OwnerInstance?.rocketsWindow?.IsOpen ?? false, () =>
+                            UIUtilities.CreateCompactToggle(rightCol, "Rockets", () => World.OwnerInstance?.rocketsWindow?.IsOpen ?? false, () =>
                             {   // Show/hide rockets window
                                 ref Captue owner = ref World.OwnerInstance;
                                 if (owner != null)
@@ -219,9 +217,8 @@ namespace ScreenCapture
 
                     CreateNestedVertical(controlsContainer, 2f, null, TextAnchor.UpperCenter, cropControls =>
                     {
-                        CaptureUtilities.CreateCropControls(cropControls, () =>
+                        UIUtilities.CreateCropControls(cropControls, () =>
                         {   // Unified crop change handler with preview update
-                            CaptureUtilities.UpdatePreviewCropping();
                             RefreshLayoutForCroppedPreview();
                             UpdateEstimatesUI();
                             RequestPreviewUpdate();  // Use local method instead of owner method
@@ -240,7 +237,7 @@ namespace ScreenCapture
 
             CreateNestedVertical(controls, 5f, null, TextAnchor.LowerLeft, leftRow =>
             {
-                CaptureUtilities.CreateTimeControls(leftRow);
+                UIUtilities.CreateTimeControls(leftRow);
 
                 CreateNestedHorizontal(leftRow, 10f, null, TextAnchor.LowerLeft, captureRow =>
                 {
@@ -365,7 +362,7 @@ namespace ScreenCapture
             }
 
             // Centralized cleanup of UI resources
-            CaptureUtilities.CleanupUI(ownerRef);
+            PreviewUtilities.CleanupUI(ownerRef);
 
             // Hide child windows
             if (ownerRef.backgroundWindow != null)
@@ -528,7 +525,7 @@ namespace ScreenCapture
             CaptureUtilities.RestoreSceneVisibility(modified);
 
             // Update RawImage layout first, then make border/parent follow image size
-            CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+            PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
             if (Captue.PreviewImage != null) UpdatePreviewBorderSize();
         }
 
@@ -908,7 +905,7 @@ namespace ScreenCapture
                     LayoutRebuilder.ForceRebuildLayoutImmediate(previewContainer.rectTransform.parent as RectTransform);
 
                 // Update RawImage size from current RT and crop, then sync border and parent
-                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+                PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
 
                 if (Captue.PreviewImage?.rectTransform != null)
                 {
@@ -943,7 +940,7 @@ namespace ScreenCapture
                     return;
 
                 // Ensure image is laid out according to RT+crop and then mirror size to border
-                CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+                PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
                 var imgSize = imageRect.sizeDelta;
                 borderRect.sizeDelta = imgSize;
 
@@ -984,11 +981,11 @@ namespace ScreenCapture
             // Create RawImage if missing directly under the provided container
             if (Captue.PreviewImage == null)
             {
-                CaptureUtilities.SetupPreview(parent);
+                PreviewUtilities.SetupPreview(parent);
             }
 
             // Size image from current RT and crop, then create border to match
-            CaptureUtilities.UpdatePreviewImageLayoutForCurrentRT();
+            PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
             var imgSize = Captue.PreviewImage?.rectTransform != null ? Captue.PreviewImage.rectTransform.sizeDelta : new Vector2(520f, 430f);
 
             previewBorder = Builder.CreateBox(parent, Mathf.RoundToInt(imgSize.x), Mathf.RoundToInt(imgSize.y), 0, 0, 0.2f);

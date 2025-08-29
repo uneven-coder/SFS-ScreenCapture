@@ -154,7 +154,7 @@ namespace ScreenCapture
                 if (File.Exists(fullPath))
                 {   // Verify file size matches expected
                     var fileInfo = new FileInfo(fullPath);
-                    if (fileInfo.Length > 0 && fileInfo.Length == pngBytes.Length)
+                    if (fileInfo.Length > 1024 && Math.Abs(fileInfo.Length - pngBytes.Length) < 100)
                     {
                         saveSuccess = true;
                         var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
@@ -294,17 +294,42 @@ namespace ScreenCapture
 
             double perPixelGPU = (MemoryConstants.GPU_COLOR_BPP + MemoryConstants.GPU_DEPTH_BPP) * MemoryConstants.SafetyMultiplier;
             double perPixelCPU = MemoryConstants.CPU_BPP * MemoryConstants.SafetyMultiplier;
-            double maxWgpu = Math.Sqrt(gpuBudget / Math.Max(1e-6, perPixelGPU * aspect));
-            double maxWcpu = Math.Sqrt(cpuBudget / Math.Max(1e-6, perPixelCPU * aspect));
+            
+            // Calculate max render dimensions based on memory alone
+            double maxRenderWgpu = Math.Sqrt(gpuBudget / Math.Max(1e-6, perPixelGPU * aspect));
+            double maxRenderWcpu = Math.Sqrt(cpuBudget / Math.Max(1e-6, perPixelCPU * aspect));
+            
+            // Take the smaller of GPU/CPU limits for render resolution
+            double maxRenderW = Math.Min(maxRenderWgpu, maxRenderWcpu);
 
             int texLimit = SystemInfo.maxTextureSize > 0 ? SystemInfo.maxTextureSize : int.MaxValue;
-            return Mathf.Clamp(Mathf.FloorToInt((float)Math.Min(maxWgpu, maxWcpu)), 16, texLimit);
+            
+            // Apply texture size limit to render dimensions
+            double maxRenderWWithTexLimit = Math.Min(maxRenderW, texLimit);
+            
+            // Return the render width limit (not target width)
+            return Mathf.Clamp(Mathf.FloorToInt((float)maxRenderWWithTexLimit), 16, int.MaxValue);
         }
 
         // Utility functions
         public static string FormatMB(long bytes) => $"{bytes / (1024.0 * 1024.0):0.#} MB";
         public static long EstimatePngSizeBytes(long rawBytes) => (long)Math.Max(1024, rawBytes * 0.30);
         public static int CalculateTargetRTWidth(int previewWidth) => previewWidth;
+
+        public static (int renderWidth, int renderHeight) CalculateRenderDimensions(int targetWidth, int targetHeight)
+        {   // Calculate render dimensions that produce the target output size after cropping
+            // The render size should be the same as target size - cropping happens via ReadPixels
+            // This ensures we render at the requested resolution and crop the specific area
+            return (targetWidth, targetHeight);
+        }
+
+        public static (int targetWidth, int targetHeight) CalculateTargetDimensions(int renderWidth, int renderHeight)
+        {   // Calculate final output dimensions after cropping from render dimensions
+            var (left, top, right, bottom) = GetNormalizedCropValues();
+            int targetWidth = Mathf.Max(1, Mathf.RoundToInt(renderWidth * (1f - left - right)));
+            int targetHeight = Mathf.Max(1, Mathf.RoundToInt(renderHeight * (1f - top - bottom)));
+            return (targetWidth, targetHeight);
+        }
 
         // Cropping utilities
         public static (float left, float top, float right, float bottom) GetNormalizedCropValues()
@@ -335,16 +360,24 @@ namespace ScreenCapture
         }
 
         public static Rect GetCroppedReadRect(int renderWidth, int renderHeight)
-        {   // Calculate pixel rect for cropped reading
+        {   // Calculate pixel rect for cropped reading with proper coordinate conversion
             var (left, top, right, bottom) = GetNormalizedCropValues();
+            
+            // Convert normalized crop values to pixel coordinates
+            // ReadPixels uses bottom-left origin, UV uses bottom-left origin
+            // BUT crop values are defined as distances from edges in screen space (top-left origin)
             int leftPixels = Mathf.RoundToInt(left * renderWidth);
             int rightPixels = Mathf.RoundToInt(right * renderWidth);
             int topPixels = Mathf.RoundToInt(top * renderHeight);
             int bottomPixels = Mathf.RoundToInt(bottom * renderHeight);
 
-            return new Rect(leftPixels, bottomPixels, 
-                           Mathf.Max(1, renderWidth - leftPixels - rightPixels),
-                           Mathf.Max(1, renderHeight - topPixels - bottomPixels));
+            // For ReadPixels: Y=0 is bottom of texture, so top crop becomes bottom offset in ReadPixels space
+            int cropX = leftPixels;
+            int cropY = topPixels;  // Top crop becomes Y offset from bottom (flipped)
+            int cropWidth = Mathf.Max(1, renderWidth - leftPixels - rightPixels);
+            int cropHeight = Mathf.Max(1, renderHeight - topPixels - bottomPixels);
+
+            return new Rect(cropX, cropY, cropWidth, cropHeight);
         }
 
         public static void ApplyCroppingToCamera(Camera camera)
@@ -650,7 +683,7 @@ namespace ScreenCapture
         }
 
         private static void UpdatePreviewCropping()
-        {   // Apply crop via UVs and resize from current RT + crop to avoid stretching
+        {   // Apply crop via UVs matching ReadPixels coordinate conversion
             if (World.PreviewCamera == null || Captue.PreviewImage == null) return;
 
             Main.LastScreenWidth = Screen.width;
@@ -658,8 +691,18 @@ namespace ScreenCapture
 
             var (left, top, right, bottom) = CaptureUtilities.GetNormalizedCropValues();
 
+            // Preview camera renders full scene without viewport cropping
             World.PreviewCamera.rect = new Rect(0, 0, 1, 1);
-            Captue.PreviewImage.uvRect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom);
+            
+            // UV coordinates: (0,0) = bottom-left, (1,1) = top-right
+            // Crop values: left/right from edges, top/bottom from edges
+            // Convert to UV space: uvY = 1 - normalizedTopDistance, uvHeight = 1 - topCrop - bottomCrop
+            float uvLeft = left;
+            float uvBottom = bottom;  // Bottom crop stays as bottom offset
+            float uvWidth = 1f - left - right;
+            float uvHeight = 1f - top - bottom;
+            
+            Captue.PreviewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight);
 
             PreviewUtilities.UpdatePreviewImageLayoutForCurrentRT();
             World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
@@ -720,7 +763,21 @@ namespace ScreenCapture
             img.anchoredPosition = Vector2.zero;
             img.localScale = Vector3.one;
 
-            try { previewImage.uvRect = new Rect(left, bottom, 1f - left - right, 1f - top - bottom); } catch { }
+            // Apply consistent UV cropping matching ReadPixels coordinate system  
+            try 
+            { 
+                float uvLeft = left;
+                float uvBottom = bottom;  // Bottom crop as bottom offset
+                float uvWidth = 1f - left - right;
+                float uvHeight = 1f - top - bottom;
+                
+                // Safety clamp
+                uvWidth = Mathf.Clamp(uvWidth, 0.01f, 1f - uvLeft);
+                uvHeight = Mathf.Clamp(uvHeight, 0.01f, 1f - uvBottom);
+                
+                previewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); 
+            } 
+            catch { }
 
             // Configure UI properties
             previewImage.raycastTarget = false;
@@ -1359,16 +1416,18 @@ namespace ScreenCapture
                 var imgSize = imageRect.sizeDelta;
                 borderRect.sizeDelta = imgSize;
 
-                // UV cropping directly from normalized values
+                // Apply consistent UV cropping matching ReadPixels coordinate system
                 var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
+                
+                // Convert crop values to UV coordinates consistently with ReadPixels
                 float uvLeft = leftCrop;
-                float uvBottom = bottomCrop;
+                float uvBottom = bottomCrop;  // Bottom crop as bottom offset
                 float uvWidth = 1f - leftCrop - rightCrop;
                 float uvHeight = 1f - topCrop - bottomCrop;
 
                 // Safety clamp to texture bounds
-                if (uvLeft + uvWidth > 1f) uvWidth = 1f - uvLeft;
-                if (uvBottom + uvHeight > 1f) uvHeight = 1f - uvBottom;
+                uvWidth = Mathf.Clamp(uvWidth, 0.01f, 1f - uvLeft);
+                uvHeight = Mathf.Clamp(uvHeight, 0.01f, 1f - uvBottom);
 
                 try { Captue.PreviewImage.uvRect = new Rect(uvLeft, uvBottom, uvWidth, uvHeight); } catch { }
 

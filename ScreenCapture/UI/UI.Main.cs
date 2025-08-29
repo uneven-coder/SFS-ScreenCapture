@@ -290,74 +290,61 @@ namespace ScreenCapture
         }
 
 
-        public void TakeScreenshot()
-        {   // Capture and save a screenshot at the specified resolution and show result animation using normalized crop values
-            ref Captue owner = ref World.OwnerInstance;
-            if (owner == null) return;
-
-            if (World.MainCamera == null)
-            {
-                if (GameCamerasManager.main != null && GameCamerasManager.main.world_Camera != null)
-                    World.MainCamera = GameCamerasManager.main.world_Camera.camera;
-                else
-                {   // Camera unavailable, abort and animate failure
-                    UnityEngine.Debug.LogError("Cannot take screenshot: Camera not available");
-                    StartWindowColorAnimation(false);
-                    return;
-                }
-            }
-
-            var (leftCrop, topCrop, rightCrop, bottomCrop) = CaptureUtilities.GetNormalizedCropValues();
-
-            float cropWidthFactor = 1f - leftCrop - rightCrop;
-            float cropHeightFactor = 1f - topCrop - bottomCrop;
-
-            int targetWidth = ResolutionWidth;
-            int targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
-
-            // Render at full scene resolution needed to support cropped target at requested size
-            int renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
-            int renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
-
-            int maxTextureSize = SystemInfo.maxTextureSize;
-            var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-            var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
-
-            if (renderWidth > maxTextureSize || renderHeight > maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
-            {   // Clamp to safe render dimensions accounting for crop
-                int maxSafeRenderWidth = CaptureUtilities.ComputeMaxSafeWidth();
-                int maxSafeTargetWidth = Mathf.RoundToInt(maxSafeRenderWidth * cropWidthFactor);
-
-                var (ow, oh) = (targetWidth, targetHeight);
-                targetWidth = maxSafeTargetWidth;
-                targetHeight = Mathf.RoundToInt((float)targetWidth / (float)Screen.width * (float)Screen.height);
-                renderWidth = Mathf.RoundToInt(targetWidth / Mathf.Max(0.01f, cropWidthFactor));
-                renderHeight = Mathf.RoundToInt(targetHeight / Mathf.Max(0.01f, cropHeightFactor));
-
-                Debug.LogWarning($"Requested {ow}x{oh} exceeds safe limits with current crop settings. Using {targetWidth}x{targetHeight} (render {renderWidth}x{renderHeight}).");
-            }
+        private void TakeScreenshot()
+        {   // Capture scene at requested resolution with optional cropping
+            if (World.MainCamera == null) { StartWindowColorAnimation(false); return; }
 
             RenderTexture fullRT = null;
             Texture2D finalTex = null;
-            int previousAntiAliasing = QualitySettings.antiAliasing;
-            bool previousOrthographic = World.MainCamera.orthographic;
-            float previousOrthographicSize = World.MainCamera.orthographicSize;
-            float previousFieldOfView = World.MainCamera.fieldOfView;
+
             var prevClearFlags = World.MainCamera.clearFlags;
             var prevBgColor = World.MainCamera.backgroundColor;
-            Vector3 previousPosition = World.MainCamera.transform.position;
+            var previousOrthographicSize = World.MainCamera.orthographicSize;
+            var previousFieldOfView = World.MainCamera.fieldOfView;
+            var previousPosition = World.MainCamera.transform.position;
+
+            // Get target dimensions from current width setting
+            int targetWidth = PreviewWidth;  // Use current preview width setting
+            int targetHeight = Mathf.RoundToInt((float)targetWidth / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
 
             try
-            {   // Render the full scene to RT, then read the cropped rectangle into final texture
-                fullRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
-                finalTex = new Texture2D(targetWidth, targetHeight, TextureFormat.RGBA32, false);
+            {   // Render scene at requested resolution, then crop via ReadPixels
+                // Use requested target dimensions as render dimensions
+                int renderWidth = targetWidth;
+                int renderHeight = targetHeight;
 
+                // Safety limits check
+                int maxTextureSize = SystemInfo.maxTextureSize;
+                var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
+                var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
+
+                if (renderWidth > maxTextureSize || renderHeight > maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
+                {   // Scale down if exceeds limits
+                    int maxSafeWidth = CaptureUtilities.ComputeMaxSafeWidth();
+                    float scale = Mathf.Min(1f, (float)maxSafeWidth / renderWidth, (float)maxTextureSize / renderWidth);
+                    
+                    renderWidth = Mathf.FloorToInt(renderWidth * scale);
+                    renderHeight = Mathf.FloorToInt(renderHeight * scale);
+                    
+                    Debug.LogWarning($"Requested {targetWidth}x{targetHeight} exceeds limits. Rendering at {renderWidth}x{renderHeight}.");
+                }
+
+                fullRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
+                
+                if (!fullRT.Create())
+                {
+                    UnityEngine.Debug.LogError($"Failed to create render texture {renderWidth}x{renderHeight}. Aborting capture.");
+                    StartWindowColorAnimation(false);
+                    return;
+                }
+
+                // Apply zoom and camera settings
                 float z = Mathf.Max(Mathf.Exp(PreviewZoomLevel), 1e-6f);
 
                 if (World.MainCamera.orthographic)
                     World.MainCamera.orthographicSize = Mathf.Clamp(previousOrthographicSize / z, 1e-6f, 1_000_000f);
                 else
-                {   // Perspective: use FOV or dolly when out of bounds
+                {   // Perspective zoom handling
                     float baseFov = Mathf.Clamp(previousFieldOfView, 5f, 120f);
                     float rawFov = baseFov / z;
 
@@ -386,13 +373,13 @@ namespace ScreenCapture
                 QualitySettings.antiAliasing = 0;
 
                 var prevMask = World.MainCamera.cullingMask;
-                World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(owner.showBackground);
+                World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
                 World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
                 World.MainCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
 
-                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(owner.showBackground, owner.showTerrain, HiddenRockets);
+                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(World.OwnerInstance?.showBackground ?? true, World.OwnerInstance?.showTerrain ?? true, Main.HiddenRockets);
 
-                // Render full scene (no viewport cropping) then crop via ReadPixels
+                // Render full scene without viewport cropping
                 World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 World.MainCamera.targetTexture = fullRT;
                 World.MainCamera.Render();
@@ -402,37 +389,39 @@ namespace ScreenCapture
                 World.MainCamera.clearFlags = prevClearFlags;
                 World.MainCamera.backgroundColor = prevBgColor;
 
-                // Compute cropped read rect in fullRT pixel space
-                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
-
-                // Read the cropped area into a temporary texture, then scale into finalTex if needed
-                var cropTex = new Texture2D((int)readRect.width, (int)readRect.height, TextureFormat.RGBA32, false);
-                RenderTexture.active = fullRT;
-                cropTex.ReadPixels(readRect, 0, 0);
-                cropTex.Apply();
-
-                // If cropTex size differs from target, resample; else assign directly
-                if (cropTex.width != targetWidth || cropTex.height != targetHeight)
-                {   // Scale cropped texture to target dimensions
-                    var rtScale = RenderTexture.GetTemporary(targetWidth, targetHeight, 0, RenderTextureFormat.ARGB32);
-                    Graphics.Blit(cropTex, rtScale);
-                    RenderTexture.active = rtScale;
-                    finalTex.ReadPixels(new Rect(0, 0, targetWidth, targetHeight), 0, 0);
-                    finalTex.Apply();
-                    RenderTexture.ReleaseTemporary(rtScale);
-                }
-                else
+                if (fullRT == null || !fullRT.IsCreated())
                 {
-                    finalTex = cropTex; // Same size, reuse
+                    UnityEngine.Debug.LogError("Render texture is invalid. Cannot read pixels.");
+                    StartWindowColorAnimation(false);
+                    return;
                 }
+
+                // Read cropped area from rendered texture
+                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
+                
+                int finalWidth = Mathf.RoundToInt(readRect.width);
+                int finalHeight = Mathf.RoundToInt(readRect.height);
+                finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+
+                RenderTexture.active = fullRT;
+                finalTex.ReadPixels(readRect, 0, 0);
+                finalTex.Apply();
+                RenderTexture.active = null;
 
                 byte[] pngBytes = finalTex.EncodeToPNG();
+                
+                if (pngBytes == null || pngBytes.Length < 1024)
+                {
+                    UnityEngine.Debug.LogError("PNG encoding failed or resulted in suspiciously small file.");
+                    StartWindowColorAnimation(false);
+                    return;
+                }
 
+                // Save file
                 string worldName = (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
                 string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
                                       new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
                 var worldFolder = FileUtilities.InsertIo(sanitizedName, Main.ScreenCaptureFolder);
-
                 string fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
 
                 using (var ms = new MemoryStream(pngBytes))
@@ -444,34 +433,28 @@ namespace ScreenCapture
                 {
                     var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
                     if (monoBehaviour != null)
-                        monoBehaviour.StartCoroutine(FileUtilities.VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, targetWidth, targetHeight, new System.Action<bool>(StartWindowColorAnimation)));
+                        monoBehaviour.StartCoroutine(FileUtilities.VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, finalWidth, finalHeight, new System.Action<bool>(StartWindowColorAnimation)));
                 }
+                else StartWindowColorAnimation(true);
 
                 var (finalGpuNeed, finalCpuNeed, finalRawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-                Debug.Log($"Saved {targetWidth}x{targetHeight} (render {renderWidth}x{renderHeight}). Approx memory: GPU {CaptureUtilities.FormatMB(finalGpuNeed)} (incl. depth), CPU {CaptureUtilities.FormatMB(finalCpuNeed)}; file size {CaptureUtilities.FormatMB(pngBytes.LongLength)} (est PNG {CaptureUtilities.FormatMB(CaptureUtilities.EstimatePngSizeBytes(finalRawBytes))}).");
+                Debug.Log($"Saved {finalWidth}x{finalHeight} (render {renderWidth}x{renderHeight}). Memory: GPU {CaptureUtilities.FormatMB(finalGpuNeed)}, CPU {CaptureUtilities.FormatMB(finalCpuNeed)}; file {CaptureUtilities.FormatMB(pngBytes.LongLength)}.");
             }
             catch (System.Exception ex)
             {
-                UnityEngine.Debug.LogError($"Screenshot capture failed: {ex.Message}\n{ex.StackTrace}");
+                UnityEngine.Debug.LogError($"Screenshot failed: {ex.Message}");
                 StartWindowColorAnimation(false);
             }
             finally
-            {
+            {   // Restore camera state
+                World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 World.MainCamera.targetTexture = null;
-                RenderTexture.active = null;
-
-                World.MainCamera.orthographic = previousOrthographic;
                 World.MainCamera.orthographicSize = previousOrthographicSize;
                 World.MainCamera.fieldOfView = previousFieldOfView;
                 World.MainCamera.transform.position = previousPosition;
-                World.MainCamera.rect = new Rect(0, 0, 1, 1);
-                QualitySettings.antiAliasing = previousAntiAliasing;
 
-                if (fullRT != null)
-                    UnityEngine.Object.Destroy(fullRT);
-
-                if (finalTex != null)
-                    UnityEngine.Object.Destroy(finalTex);
+                if (fullRT != null) { fullRT.Release(); UnityEngine.Object.Destroy(fullRT); }
+                if (finalTex != null) UnityEngine.Object.Destroy(finalTex);
             }
         }
         public override void Hide()

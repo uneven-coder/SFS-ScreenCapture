@@ -18,6 +18,7 @@ using TranslucentImage;
 using SFS; // added to reference InteriorManager
 using System.Diagnostics;
 using static ScreenCapture.CaptureUtilities;
+using UITools;
 
 namespace ScreenCapture
 {
@@ -83,6 +84,8 @@ namespace ScreenCapture
 
             World.UIHolder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "SFSRecorder");
             var closableWindow = CreateClosableWindow(World.UIHolder.transform, Builder.GetRandomID(), 980, 545, 300, 100, true, true, 1f, "ScreenShot", minimized: false);
+            closableWindow.Minimized = true;
+            closableWindow.RegisterPermanentSaving("SFSRecorder_MainWindow");
             window = closableWindow;
             closableWindow.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperLeft, 20f, new RectOffset(6, 6, 10, 6), true);
             closableWindow.EnableScrolling(SFS.UI.ModGUI.Type.Vertical);

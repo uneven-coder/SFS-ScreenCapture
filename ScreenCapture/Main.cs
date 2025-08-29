@@ -99,6 +99,20 @@ namespace ScreenCapture
         public override string ModVersion => "1.6.2"; // release, updates, fixes/changes
         public override string Description => "Adds a screenshot button to the world scene, allowing you to take screenshots at custom resolutions.";
 
+        public Dictionary<string, FilePath> UpdatableFiles
+		{
+			get
+			{
+				return new Dictionary<string, FilePath>
+				{
+					{
+						"https://github.com/uneven-coder/SFS-ScreenCapture/releases/latest/download/ScreenCapture.dll",
+						new FolderPath(base.ModFolder).ExtendToFile("ScreenCapture.dll")
+					}
+				};
+			}
+		}
+
         public override void Load()
         {
             ScreenCaptureFolder = FileUtilities.InsertIo("ScreenCaptures", FileUtilities.savingFolder);
@@ -266,8 +280,8 @@ namespace ScreenCapture
 
             // Clean up RT pool to prevent memory leaks
             bool poolCleaned = PreviewUtilities.CleanupRTPool();
-            if (poolCleaned)
-                Debug.Log("RT pool cleaned up successfully");
+            if (!poolCleaned)
+                Debug.Log("RT pool clean up failed");
         }
 
         private void CleanupUIHolder()

@@ -36,7 +36,7 @@ namespace ScreenCapture
                 Builder.CreateToggleWithLabel(container, 200, 46, () => Transparent, () =>
                 {   // Toggle transparency and refresh preview background
                     Transparent = !Transparent;
-                    Debug.Log($"BackgroundUI: Transparent set to {Transparent}");  
+                    // Debug.Log($"BackgroundUI: Transparent set to {Transparent}");  
                     World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                 }, 0, 0, "Transparent BG");
 
@@ -46,7 +46,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int r))
                     {
                         R = Mathf.Clamp(r, 0, 255);
-                        Debug.Log($"BackgroundUI: R -> {R}");  
+                        // Debug.Log($"BackgroundUI: R -> {R}");  
                         World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                     }
                 });
@@ -56,7 +56,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int g))
                     {
                         G = Mathf.Clamp(g, 0, 255);
-                        Debug.Log($"BackgroundUI: G -> {G}");  
+                        // Debug.Log($"BackgroundUI: G -> {G}");  
                         World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                     }
                 });
@@ -66,7 +66,7 @@ namespace ScreenCapture
                     if (int.TryParse(val, out int b))
                     {
                         B = Mathf.Clamp(b, 0, 255);
-                        Debug.Log($"BackgroundUI: B -> {B}");  
+                        // Debug.Log($"BackgroundUI: B -> {B}");  
                         World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                     }
                 });

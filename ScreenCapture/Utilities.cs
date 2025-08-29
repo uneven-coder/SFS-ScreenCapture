@@ -547,7 +547,7 @@ namespace ScreenCapture
                 if (SFS.InteriorManager.main != null)
                 {
                     SFS.InteriorManager.main.ToggleInteriorView();
-                    Debug.Log($"Global interior visibility toggled to: {SFS.InteriorManager.main.interiorView.Value}");
+                    // Debug.Log($"Global interior visibility toggled to: {SFS.InteriorManager.main.interiorView.Value}");
                 }
                 else Debug.LogWarning("InteriorManager.main is null - cannot toggle interior view");
             }
@@ -950,7 +950,7 @@ namespace ScreenCapture
                     frameHistory.RemoveRange(0, frameHistory.Count - MaxFrameHistory);
 
                 currentFrameIndex = frameHistory.Count - 1;
-                Debug.Log($"Saved frame {currentFrameIndex + 1}/{frameHistory.Count}");
+                // Debug.Log($"Saved frame {currentFrameIndex + 1}/{frameHistory.Count}");
             }
             catch (Exception ex) { Debug.LogError($"Error saving frame: {ex.Message}"); }
         }
@@ -1439,7 +1439,7 @@ namespace ScreenCapture
             le.minHeight = imgSize.y + 12f;
 
             previewInitialized = true;
-            Debug.Log($"Preview setup: Image {imgSize.x}x{imgSize.y}");
+            // Debug.Log($"Preview setup: Image {imgSize.x}x{imgSize.y}");
         }
     }
 

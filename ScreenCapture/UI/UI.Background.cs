@@ -1,4 +1,5 @@
 using System;
+using SFS;
 using SFS.UI.ModGUI;
 using SFS.Utilities;
 using UnityEngine;
@@ -29,24 +30,19 @@ namespace ScreenCapture
                 (int)World.OwnerInstance.closableWindow.Position.y
             );
 
-            // Create content using the delegate approach for cleaner organization
             CreateVerticalContainer(window, 8f, null, TextAnchor.UpperCenter, container =>
             {
-                // Toggle for transparency
                 Builder.CreateToggleWithLabel(container, 200, 46, () => Transparent, () =>
                 {   // Toggle transparency and refresh preview background
-                    Transparent = !Transparent;
-                    // Debug.Log($"BackgroundUI: Transparent set to {Transparent}");  
+                    Transparent = !Transparent; 
                     World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                 }, 0, 0, "Transparent BG");
 
-                // RGB color inputs
                 Builder.CreateInputWithLabel(container, 200, 40, 0, 0, "R", ((int)R).ToString(), val =>
                 {
                     if (int.TryParse(val, out int r))
                     {
-                        R = Mathf.Clamp(r, 0, 255);
-                        // Debug.Log($"BackgroundUI: R -> {R}");  
+                        R = Mathf.Clamp(r, 0, 255); 
                         World.OwnerInstance?.SchedulePreviewUpdate(immediate: true);
                     }
                 });

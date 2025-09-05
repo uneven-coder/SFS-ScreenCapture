@@ -96,7 +96,7 @@ namespace ScreenCapture
         public override string DisplayName => "ScreenCapture";
         public override string Author => "Cratior";
         public override string MinimumGameVersionNecessary => "1.5.10";
-        public override string ModVersion => "1.6.9"; // release, updates, fixes/changes
+        public override string ModVersion => "1.6.10"; // release, updates, fixes/changes
         public override string Description => "Adds a screenshot button, allowing you to take screenshots at custom resolutions. With many features for customization that would make any youtuber proud.";
 
         public Dictionary<string, FilePath> UpdatableFiles

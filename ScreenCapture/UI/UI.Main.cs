@@ -68,6 +68,9 @@ namespace ScreenCapture
             targetWidth = Mathf.Clamp(targetWidth, 1, maxSafeTargetWidth);
             resInput.Text = targetWidth.ToString();
             ResolutionWidth = targetWidth;
+            
+            Debug.Log($"Resolution input changed: val='{val}', parsed={targetWidth}, ResolutionWidth now={ResolutionWidth}");
+            
             UpdateEstimatesUI();
         }
 
@@ -303,9 +306,14 @@ namespace ScreenCapture
             var previousFieldOfView = World.MainCamera.fieldOfView;
             var previousPosition = World.MainCamera.transform.position;
 
-            // Get target dimensions from current width setting
-            int targetWidth = PreviewWidth;  // Use current preview width setting
+            // Get target dimensions from resolution input field
+            int targetWidth;
+            if (!int.TryParse(resInput?.Text, out targetWidth))
+                targetWidth = ResolutionWidth;  // Fallback to property if input parsing fails
+            
             int targetHeight = Mathf.RoundToInt((float)targetWidth / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
+
+            Debug.Log($"Screenshot requested: targetWidth={targetWidth}, ResolutionWidth={ResolutionWidth}, input text='{resInput?.Text}'");
 
             try
             {   // Render scene at requested resolution, then crop via ReadPixels

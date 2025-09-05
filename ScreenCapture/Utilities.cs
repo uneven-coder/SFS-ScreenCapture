@@ -594,7 +594,6 @@ namespace ScreenCapture
         }
     }
 
-    // UI creation utilities
     public static class UIUtilities
     {
         public static void CreateCompactToggle(Container parent, string label, System.Func<bool> getter, System.Action action)
@@ -709,7 +708,6 @@ namespace ScreenCapture
         }
     }
 
-    // Preview management utilities
     public static class PreviewUtilities
     {
         // RT pool for instant switching without allocation lag
@@ -1118,10 +1116,9 @@ namespace ScreenCapture
     }
 
     public class UIAnimationHost : MonoBehaviour
-    {   // Simple MonoBehaviour host for running UI animations on non-MonoBehaviour objects
+    {   
     }
-
-    // Animation and visual effects utilities  
+ 
     public static class AnimationUtilities
     {
         private static readonly Dictionary<UITools.ClosableWindow, MonoBehaviour> animationHosts = new Dictionary<UITools.ClosableWindow, MonoBehaviour>();
@@ -1288,7 +1285,6 @@ namespace ScreenCapture
         }
     }
 
-    // Preview hierarchy and compliance utilities
     public static class PreviewHierarchyUtilities
     {
         public static void ForceWindowHierarchyCompliance(GameObject borderGO, GameObject windowGameObject)

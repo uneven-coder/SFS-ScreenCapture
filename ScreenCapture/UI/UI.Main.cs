@@ -314,9 +314,21 @@ namespace ScreenCapture
             int targetHeight = Mathf.RoundToInt((float)targetWidth / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
 
             Debug.Log($"Screenshot requested: targetWidth={targetWidth}, ResolutionWidth={ResolutionWidth}, input text='{resInput?.Text}'");
+            
+            // Log comprehensive system information for debugging
+            Debug.Log($"System Info - GPU: {SystemInfo.graphicsDeviceName}, Type: {SystemInfo.graphicsDeviceType}, " +
+                     $"Version: {SystemInfo.graphicsDeviceVersion}, Memory: {SystemInfo.graphicsMemorySize}MB, " +
+                     $"Max Texture: {SystemInfo.maxTextureSize}x{SystemInfo.maxTextureSize}, Shader Level: {SystemInfo.graphicsShaderLevel}");
+            
+            Debug.Log($"Unity Info - Version: {Application.unityVersion}, Platform: {Application.platform}, " +
+                     $"Quality Level: {QualitySettings.GetQualityLevel()}, Anti-Aliasing: {QualitySettings.antiAliasing}, " +
+                     $"Color Space: {QualitySettings.activeColorSpace}");
 
             try
             {   // Render scene at requested resolution, then crop via ReadPixels
+                // Intel GPU workarounds needed throughout
+                bool isIntelGPU = SystemInfo.graphicsDeviceName.Contains("Intel");
+                
                 // Use requested target dimensions as render dimensions
                 int renderWidth = targetWidth;
                 int renderHeight = targetHeight;
@@ -337,6 +349,9 @@ namespace ScreenCapture
                     Debug.LogWarning($"Requested {targetWidth}x{targetHeight} exceeds limits. Rendering at {renderWidth}x{renderHeight}.");
                 }
 
+                // Choose RT format based on transparency needs
+                bool needsTransparency = !(World.OwnerInstance?.showBackground ?? true);
+
                 fullRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
                 
                 if (!fullRT.Create())
@@ -344,6 +359,20 @@ namespace ScreenCapture
                     UnityEngine.Debug.LogError($"Failed to create render texture {renderWidth}x{renderHeight}. Aborting capture.");
                     StartWindowColorAnimation(false);
                     return;
+                }
+                
+                // Log RenderTexture details for debugging
+                Debug.Log($"RenderTexture Created - Format: {fullRT.format}, Depth: {fullRT.depth}, " +
+                         $"sRGB: {fullRT.sRGB}, Dimension: {fullRT.dimension}, " +
+                         $"Supports MSAA: {fullRT.antiAliasing}, GPU Memory: {fullRT.width * fullRT.height * 4} bytes");
+
+                // Intel GPU compatibility: only clear if background is enabled and we need opaque output
+                if (isIntelGPU && (World.OwnerInstance?.showBackground ?? true))
+                {   // Force clear RT for Intel GPU compatibility when background should be shown
+                    RenderTexture.active = fullRT;
+                    GL.Clear(true, true, Color.black);
+                    RenderTexture.active = null;
+                    Debug.Log("Applied Intel GPU initial RT clear for opaque background");
                 }
 
                 // Apply zoom and camera settings
@@ -382,15 +411,102 @@ namespace ScreenCapture
 
                 var prevMask = World.MainCamera.cullingMask;
                 World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
-                World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
-                World.MainCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
+                
+                // Debug camera clear settings
+                var bgColor = BackgroundUI.GetBackgroundColor();
+                Debug.Log($"Camera settings: clearFlags={World.MainCamera.clearFlags}, bgColor={bgColor}, showBackground={World.OwnerInstance?.showBackground ?? true}");
+                Debug.Log($"Camera details: renderingPath={World.MainCamera.renderingPath}, allowHDR={World.MainCamera.allowHDR}, " +
+                         $"allowMSAA={World.MainCamera.allowMSAA}, cullingMask=0x{World.MainCamera.cullingMask:X8}");
+                
+                // For transparency, camera should NOT clear to solid color when background is hidden
+                Debug.Log($"BackgroundUI.GetBackgroundColor() returned: {bgColor}");
+                
+                // Safety check: ensure background color is opaque unless transparency is explicitly wanted
+                if (bgColor.a < 0.99f && (World.OwnerInstance?.showBackground ?? true))
+                {   // Background is ON but color is transparent - force opaque for fresh installs
+                    bgColor.a = 1.0f;
+                    Debug.LogWarning($"Forced background alpha to 1.0 - was {BackgroundUI.GetBackgroundColor().a:F3}. " +
+                                   "Turn OFF 'Background' toggle if transparency is desired.");
+                }
+                
+                if (!(World.OwnerInstance?.showBackground ?? true))
+                {   // Background is hidden - camera should preserve transparency
+                    World.MainCamera.clearFlags = CameraClearFlags.Nothing;
+                    Debug.Log("Set camera to preserve transparency (CameraClearFlags.Nothing)");
+                }
+                else
+                {   // Background is shown - camera should clear to background color
+                    World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
+                    World.MainCamera.backgroundColor = bgColor;
+                    Debug.Log($"Set camera to clear with background color: {bgColor}");
+                    
+                    // Additional Intel GPU fix: force camera clear immediately after setting but only when background is enabled
+                    if (isIntelGPU)
+                    {   
+                        RenderTexture.active = fullRT;
+                        GL.Clear(true, true, bgColor);
+                        RenderTexture.active = null;
+                        Debug.Log("Applied Intel GPU double-clear workaround for opaque background");
+                    }
+                }
 
                 var modified = CaptureUtilities.ApplySceneVisibilityTemporary(World.OwnerInstance?.showBackground ?? true, World.OwnerInstance?.showTerrain ?? true, Main.HiddenRockets);
 
                 // Render full scene without viewport cropping
                 World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 World.MainCamera.targetTexture = fullRT;
+                
+                // Debug RT before rendering
+                RenderTexture.active = fullRT;
+                var prePixels = new Color32[renderWidth * renderHeight];
+                var preTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
+                preTex.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
+                preTex.Apply();
+                var preData = preTex.GetPixels32();
+                int preTransparent = preData.Count(p => p.a < 255);
+                Debug.Log($"RT before render: {preTransparent}/{preData.Length} transparent pixels");
+                UnityEngine.Object.Destroy(preTex);
+                RenderTexture.active = null;
+                
                 World.MainCamera.Render();
+                
+                // Intel GPU fix: if RT is still mostly transparent after render, force clear and re-render
+                if (isIntelGPU && (World.OwnerInstance?.showBackground ?? true))
+                {   // Check if render failed on Intel GPU and retry with forced clear
+                    RenderTexture.active = fullRT;
+                    var checkTex = new Texture2D(100, 100, TextureFormat.RGBA32, false);
+                    checkTex.ReadPixels(new Rect(0, 0, 100, 100), 0, 0);
+                    checkTex.Apply();
+                    var checkPixels = checkTex.GetPixels32();
+                    int transparentCount = checkPixels.Count(p => p.a < 128);
+                    UnityEngine.Object.Destroy(checkTex);
+                    RenderTexture.active = null;
+                    
+                    if (transparentCount > checkPixels.Length * 0.8f)
+                    {   // Most pixels are transparent when they shouldn't be - force clear and re-render
+                        Debug.LogWarning($"Intel GPU transparency issue detected ({transparentCount}/{checkPixels.Length} transparent), applying fix");
+                        
+                        RenderTexture.active = fullRT;
+                        GL.Clear(true, true, bgColor);
+                        RenderTexture.active = null;
+                        
+                        World.MainCamera.targetTexture = fullRT;
+                        World.MainCamera.Render();
+                        
+                        Debug.Log("Applied Intel GPU forced re-render");
+                    }
+                }
+                
+                // Debug RT after rendering
+                RenderTexture.active = fullRT;
+                var postTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
+                postTex.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
+                postTex.Apply();
+                var postData = postTex.GetPixels32();
+                int postTransparent = postData.Count(p => p.a < 255);
+                Debug.Log($"RT after render: {postTransparent}/{postData.Length} transparent pixels");
+                UnityEngine.Object.Destroy(postTex);
+                RenderTexture.active = null;
 
                 CaptureUtilities.RestoreSceneVisibility(modified);
                 World.MainCamera.cullingMask = prevMask;
@@ -409,14 +525,81 @@ namespace ScreenCapture
                 
                 int finalWidth = Mathf.RoundToInt(readRect.width);
                 int finalHeight = Mathf.RoundToInt(readRect.height);
+                
+                // Create texture with proper format for transparency support
                 finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+                
+                // Log Texture2D details for debugging
+                Debug.Log($"Texture2D Created - Format: {finalTex.format}, Size: {finalWidth}x{finalHeight}, " +
+                         $"Mipmap: {finalTex.mipmapCount > 1}, GPU Memory: {finalTex.GetRawTextureData().Length} bytes");
 
                 RenderTexture.active = fullRT;
                 finalTex.ReadPixels(readRect, 0, 0);
                 finalTex.Apply();
                 RenderTexture.active = null;
 
+                // Debug transparency in final texture
+                var pixels = finalTex.GetPixels32();
+                int transparentPixels = pixels.Count(p => p.a < 255);
+                int totalPixels = pixels.Length;
+                Debug.Log($"Final texture: {transparentPixels}/{totalPixels} transparent pixels ({(float)transparentPixels/totalPixels*100:F1}%)");
+
+                // Encode with transparency preservation
                 byte[] pngBytes = finalTex.EncodeToPNG();
+                
+                // Comprehensive PNG encoding analysis
+                if (pngBytes != null && pngBytes.Length > 33)
+                {   // Analyze PNG header and chunks for transparency support
+                    Debug.Log($"PNG Header Analysis:");
+                    Debug.Log($"  - PNG Signature: {(pngBytes[0] == 0x89 && pngBytes[1] == 0x50 && pngBytes[2] == 0x4E && pngBytes[3] == 0x47 ? "Valid" : "Invalid")}");
+                    
+                    // IHDR chunk analysis (starts at byte 12)
+                    if (pngBytes.Length > 29)
+                    {   
+                        int colorType = pngBytes[25];
+                        int bitDepth = pngBytes[24];
+                        Debug.Log($"  - IHDR Color Type: {colorType} ({GetPNGColorTypeName(colorType)}), Bit Depth: {bitDepth}");
+                        Debug.Log($"  - Alpha Channel: {(colorType == 4 || colorType == 6 ? "Present" : "None")}");
+                    }
+                    
+                    // Search for transparency-related chunks
+                    bool hasAlphaChunk = false;
+                    bool hastRNSChunk = false;
+                    
+                    for (int i = 8; i < pngBytes.Length - 8; i += 4)
+                    {   // Look for chunk signatures
+                        if (i + 4 < pngBytes.Length)
+                        {
+                            string chunkType = System.Text.Encoding.ASCII.GetString(pngBytes, i + 4, 4);
+                            if (chunkType == "tRNS") hastRNSChunk = true;
+                            if (chunkType == "bKGD") hasAlphaChunk = true;
+                        }
+                    }
+                    
+                    Debug.Log($"  - Transparency Chunks: tRNS={hastRNSChunk}, bKGD={hasAlphaChunk}");
+                    Debug.Log($"  - File Size: {pngBytes.Length} bytes ({(float)pngBytes.Length / (finalWidth * finalHeight * 4) * 100:F1}% of uncompressed)");
+                    
+                    if (transparentPixels > 0)
+                    {
+                        int colorType = pngBytes.Length > 25 ? pngBytes[25] : -1;
+                        if (colorType != 6)
+                            Debug.LogWarning($"PNG Color Type {colorType} may not preserve alpha channel properly (should be 6 for RGBA)");
+                    }
+                }
+                else
+                {
+                    Debug.LogError($"PNG encoding failed - bytes: {pngBytes?.Length ?? 0}");
+                }
+                
+                // Verify PNG encoding preserved transparency
+                if (transparentPixels > 0 && pngBytes != null)
+                {   
+                    bool hasRGBAColorType = pngBytes.Length > 25 && pngBytes[25] == 6;
+                    Debug.Log($"PNG Transparency Check: Input had {transparentPixels} transparent pixels, " +
+                             $"RGBA Format: {hasRGBAColorType}");
+                }
+                else if (transparentPixels > 0)
+                    Debug.LogWarning("PNG encoding failed but texture had transparent pixels");
                 
                 if (pngBytes == null || pngBytes.Length < 1024)
                 {
@@ -626,6 +809,19 @@ namespace ScreenCapture
         public override void Refresh()
         {   // Rebuild UI to reflect current state
             if (window == null) return; Hide(); Show();
+        }
+
+        private string GetPNGColorTypeName(int colorType)
+        {   // Return human-readable PNG color type names for debugging
+            switch (colorType)
+            {
+                case 0: return "Grayscale";
+                case 2: return "RGB";
+                case 3: return "Palette";
+                case 4: return "Grayscale+Alpha";
+                case 6: return "RGBA";
+                default: return $"Unknown({colorType})";
+            }
         }
     }
 }

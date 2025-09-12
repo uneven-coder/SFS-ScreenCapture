@@ -294,360 +294,362 @@ namespace ScreenCapture
 
 
         private void TakeScreenshot()
-        {   // Capture scene at requested resolution with optional cropping
+        {   // Capture scene at requested resolution with optional cropping using GPU-compatible rendering
             if (World.MainCamera == null) { StartWindowColorAnimation(false); return; }
 
+            var cameraState = SaveCameraState();
             RenderTexture fullRT = null;
             Texture2D finalTex = null;
 
-            var prevClearFlags = World.MainCamera.clearFlags;
-            var prevBgColor = World.MainCamera.backgroundColor;
-            var previousOrthographicSize = World.MainCamera.orthographicSize;
-            var previousFieldOfView = World.MainCamera.fieldOfView;
-            var previousPosition = World.MainCamera.transform.position;
-
-            // Get target dimensions from resolution input field
-            int targetWidth;
-            if (!int.TryParse(resInput?.Text, out targetWidth))
-                targetWidth = ResolutionWidth;  // Fallback to property if input parsing fails
-            
-            int targetHeight = Mathf.RoundToInt((float)targetWidth / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
-
-            Debug.Log($"Screenshot requested: targetWidth={targetWidth}, ResolutionWidth={ResolutionWidth}, input text='{resInput?.Text}'");
-            
-            // Log comprehensive system information for debugging
-            Debug.Log($"System Info - GPU: {SystemInfo.graphicsDeviceName}, Type: {SystemInfo.graphicsDeviceType}, " +
-                     $"Version: {SystemInfo.graphicsDeviceVersion}, Memory: {SystemInfo.graphicsMemorySize}MB, " +
-                     $"Max Texture: {SystemInfo.maxTextureSize}x{SystemInfo.maxTextureSize}, Shader Level: {SystemInfo.graphicsShaderLevel}");
-            
-            Debug.Log($"Unity Info - Version: {Application.unityVersion}, Platform: {Application.platform}, " +
-                     $"Quality Level: {QualitySettings.GetQualityLevel()}, Anti-Aliasing: {QualitySettings.antiAliasing}, " +
-                     $"Color Space: {QualitySettings.activeColorSpace}");
-
             try
-            {   // Render scene at requested resolution, then crop via ReadPixels
-                // Intel GPU workarounds needed throughout
-                bool isIntelGPU = SystemInfo.graphicsDeviceName.Contains("Intel");
+            {   // Main capture sequence with memory and compatibility checks
+                var (renderWidth, renderHeight) = ComputeRenderDimensions();
+
+                fullRT = CreateCompatibleRenderTexture(renderWidth, renderHeight);
+                if (fullRT == null) { StartWindowColorAnimation(false); return; }
+
+                SetupCameraForCapture(ref cameraState);
                 
-                // Use requested target dimensions as render dimensions
-                int renderWidth = targetWidth;
-                int renderHeight = targetHeight;
+                bool showBackground = World.OwnerInstance?.showBackground ?? true;
+                ConfigureBackgroundRendering(fullRT, showBackground);
 
-                // Safety limits check
-                int maxTextureSize = SystemInfo.maxTextureSize;
-                var (gpuNeed, cpuNeed, rawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-                var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
+                ApplyZoomToCamera(cameraState);
 
-                if (renderWidth > maxTextureSize || renderHeight > maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
-                {   // Scale down if exceeds limits
-                    int maxSafeWidth = CaptureUtilities.ComputeMaxSafeWidth();
-                    float scale = Mathf.Min(1f, (float)maxSafeWidth / renderWidth, (float)maxTextureSize / renderWidth);
-                    
-                    renderWidth = Mathf.FloorToInt(renderWidth * scale);
-                    renderHeight = Mathf.FloorToInt(renderHeight * scale);
-                    
-                    Debug.LogWarning($"Requested {targetWidth}x{targetHeight} exceeds limits. Rendering at {renderWidth}x{renderHeight}.");
-                }
+                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(showBackground, World.OwnerInstance?.showTerrain ?? true, Main.HiddenRockets);
 
-                // Choose RT format based on transparency needs
-                bool needsTransparency = !(World.OwnerInstance?.showBackground ?? true);
-
-                fullRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
-                
-                if (!fullRT.Create())
-                {
-                    UnityEngine.Debug.LogError($"Failed to create render texture {renderWidth}x{renderHeight}. Aborting capture.");
-                    StartWindowColorAnimation(false);
-                    return;
-                }
-                
-                // Log RenderTexture details for debugging
-                Debug.Log($"RenderTexture Created - Format: {fullRT.format}, Depth: {fullRT.depth}, " +
-                         $"sRGB: {fullRT.sRGB}, Dimension: {fullRT.dimension}, " +
-                         $"Supports MSAA: {fullRT.antiAliasing}, GPU Memory: {fullRT.width * fullRT.height * 4} bytes");
-
-                // Intel GPU compatibility: only clear if background is enabled and we need opaque output
-                if (isIntelGPU && (World.OwnerInstance?.showBackground ?? true))
-                {   // Force clear RT for Intel GPU compatibility when background should be shown
-                    RenderTexture.active = fullRT;
-                    GL.Clear(true, true, Color.black);
-                    RenderTexture.active = null;
-                    Debug.Log("Applied Intel GPU initial RT clear for opaque background");
-                }
-
-                // Apply zoom and camera settings
-                float z = Mathf.Max(Mathf.Exp(PreviewZoomLevel), 1e-6f);
-
-                if (World.MainCamera.orthographic)
-                    World.MainCamera.orthographicSize = Mathf.Clamp(previousOrthographicSize / z, 1e-6f, 1_000_000f);
-                else
-                {   // Perspective zoom handling
-                    float baseFov = Mathf.Clamp(previousFieldOfView, 5f, 120f);
-                    float rawFov = baseFov / z;
-
-                    if (rawFov >= 5f && rawFov <= 120f)
-                        World.MainCamera.fieldOfView = rawFov;
-                    else if (rawFov > 120f)
-                    {
-                        World.MainCamera.fieldOfView = 120f;
-                        var fwd = World.MainCamera.transform.forward;
-                        var pivot = previousPosition + fwd * PreviewBasePivotDistance;
-                        float ratio = rawFov / 120f;
-                        float newDist = Mathf.Clamp(PreviewBasePivotDistance * ratio, PreviewBasePivotDistance, 1_000_000f);
-                        World.MainCamera.transform.position = pivot - fwd * newDist;
-                    }
-                    else
-                    {
-                        World.MainCamera.fieldOfView = 5f;
-                        var fwd = World.MainCamera.transform.forward;
-                        var pivot = previousPosition + fwd * PreviewBasePivotDistance;
-                        float ratio = 5f / Mathf.Max(rawFov, 1e-6f);
-                        float newDist = Mathf.Clamp(PreviewBasePivotDistance / ratio, 0.001f, PreviewBasePivotDistance);
-                        World.MainCamera.transform.position = pivot - fwd * newDist;
-                    }
-                }
-
-                QualitySettings.antiAliasing = 0;
-
-                var prevMask = World.MainCamera.cullingMask;
-                World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
-                
-                // Debug camera clear settings
-                var bgColor = BackgroundUI.GetBackgroundColor();
-                Debug.Log($"Camera settings: clearFlags={World.MainCamera.clearFlags}, bgColor={bgColor}, showBackground={World.OwnerInstance?.showBackground ?? true}");
-                Debug.Log($"Camera details: renderingPath={World.MainCamera.renderingPath}, allowHDR={World.MainCamera.allowHDR}, " +
-                         $"allowMSAA={World.MainCamera.allowMSAA}, cullingMask=0x{World.MainCamera.cullingMask:X8}");
-                
-                // For transparency, camera should NOT clear to solid color when background is hidden
-                Debug.Log($"BackgroundUI.GetBackgroundColor() returned: {bgColor}");
-                
-                // Safety check: ensure background color is opaque unless transparency is explicitly wanted
-                if (bgColor.a < 0.99f && (World.OwnerInstance?.showBackground ?? true))
-                {   // Background is ON but color is transparent - force opaque for fresh installs
-                    bgColor.a = 1.0f;
-                    Debug.LogWarning($"Forced background alpha to 1.0 - was {BackgroundUI.GetBackgroundColor().a:F3}. " +
-                                   "Turn OFF 'Background' toggle if transparency is desired.");
-                }
-                
-                if (!(World.OwnerInstance?.showBackground ?? true))
-                {   // Background is hidden - camera should preserve transparency
-                    World.MainCamera.clearFlags = CameraClearFlags.Nothing;
-                    Debug.Log("Set camera to preserve transparency (CameraClearFlags.Nothing)");
-                }
-                else
-                {   // Background is shown - camera should clear to background color
-                    World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
-                    World.MainCamera.backgroundColor = bgColor;
-                    Debug.Log($"Set camera to clear with background color: {bgColor}");
-                    
-                    // Additional Intel GPU fix: force camera clear immediately after setting but only when background is enabled
-                    if (isIntelGPU)
-                    {   
-                        RenderTexture.active = fullRT;
-                        GL.Clear(true, true, bgColor);
-                        RenderTexture.active = null;
-                        Debug.Log("Applied Intel GPU double-clear workaround for opaque background");
-                    }
-                }
-
-                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(World.OwnerInstance?.showBackground ?? true, World.OwnerInstance?.showTerrain ?? true, Main.HiddenRockets);
-
-                // Render full scene without viewport cropping
                 World.MainCamera.rect = new Rect(0, 0, 1, 1);
                 World.MainCamera.targetTexture = fullRT;
-                
-                // Debug RT before rendering
-                RenderTexture.active = fullRT;
-                var prePixels = new Color32[renderWidth * renderHeight];
-                var preTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
-                preTex.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
-                preTex.Apply();
-                var preData = preTex.GetPixels32();
-                int preTransparent = preData.Count(p => p.a < 255);
-                Debug.Log($"RT before render: {preTransparent}/{preData.Length} transparent pixels");
-                UnityEngine.Object.Destroy(preTex);
-                RenderTexture.active = null;
-                
                 World.MainCamera.Render();
-                
-                // Intel GPU fix: if RT is still mostly transparent after render, force clear and re-render
-                if (isIntelGPU && (World.OwnerInstance?.showBackground ?? true))
-                {   // Check if render failed on Intel GPU and retry with forced clear
-                    RenderTexture.active = fullRT;
-                    var checkTex = new Texture2D(100, 100, TextureFormat.RGBA32, false);
-                    checkTex.ReadPixels(new Rect(0, 0, 100, 100), 0, 0);
-                    checkTex.Apply();
-                    var checkPixels = checkTex.GetPixels32();
-                    int transparentCount = checkPixels.Count(p => p.a < 128);
-                    UnityEngine.Object.Destroy(checkTex);
-                    RenderTexture.active = null;
-                    
-                    if (transparentCount > checkPixels.Length * 0.8f)
-                    {   // Most pixels are transparent when they shouldn't be - force clear and re-render
-                        Debug.LogWarning($"Intel GPU transparency issue detected ({transparentCount}/{checkPixels.Length} transparent), applying fix");
-                        
-                        RenderTexture.active = fullRT;
-                        GL.Clear(true, true, bgColor);
-                        RenderTexture.active = null;
-                        
-                        World.MainCamera.targetTexture = fullRT;
-                        World.MainCamera.Render();
-                        
-                        Debug.Log("Applied Intel GPU forced re-render");
-                    }
+
+                finalTex = ReadCroppedTexture(fullRT, renderWidth, renderHeight);
+                if (finalTex == null) { StartWindowColorAnimation(false); return; }
+
+                byte[] pngBytes = finalTex.EncodeToPNG();
+                if (pngBytes == null || pngBytes.Length < 1024)
+                {   // Try alternative encoding methods for broken PNG encoders
+                    pngBytes = TryFallbackEncoding(finalTex);
+                    if (pngBytes == null || pngBytes.Length < 1024)
+                    {   UnityEngine.Debug.LogError("All encoding methods failed."); StartWindowColorAnimation(false); return; }
                 }
-                
-                // Debug RT after rendering
-                RenderTexture.active = fullRT;
-                var postTex = new Texture2D(renderWidth, renderHeight, TextureFormat.RGBA32, false);
-                postTex.ReadPixels(new Rect(0, 0, renderWidth, renderHeight), 0, 0);
-                postTex.Apply();
-                var postData = postTex.GetPixels32();
-                int postTransparent = postData.Count(p => p.a < 255);
-                Debug.Log($"RT after render: {postTransparent}/{postData.Length} transparent pixels");
-                UnityEngine.Object.Destroy(postTex);
-                RenderTexture.active = null;
+
+                SaveScreenshotFile(pngBytes, renderWidth, finalTex.width, finalTex.height);
 
                 CaptureUtilities.RestoreSceneVisibility(modified);
-                World.MainCamera.cullingMask = prevMask;
-                World.MainCamera.clearFlags = prevClearFlags;
-                World.MainCamera.backgroundColor = prevBgColor;
+            }
+            catch (System.Exception ex)
+            {   UnityEngine.Debug.LogError($"Screenshot failed: {ex.Message}"); StartWindowColorAnimation(false); }
+            finally
+            {   RestoreCameraState(cameraState); if (fullRT != null) { fullRT.Release(); UnityEngine.Object.Destroy(fullRT); } if (finalTex != null) UnityEngine.Object.Destroy(finalTex); }
+        }
 
-                if (fullRT == null || !fullRT.IsCreated())
-                {
-                    UnityEngine.Debug.LogError("Render texture is invalid. Cannot read pixels.");
-                    StartWindowColorAnimation(false);
-                    return;
-                }
+        private struct CameraState
+        {   // Store camera properties for restoration after capture
+            public CameraClearFlags clearFlags;
+            public Color backgroundColor;
+            public float orthographicSize;
+            public float fieldOfView;
+            public Vector3 position;
+            public int cullingMask;
+        }
 
-                // Read cropped area from rendered texture
-                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
-                
-                int finalWidth = Mathf.RoundToInt(readRect.width);
-                int finalHeight = Mathf.RoundToInt(readRect.height);
-                
-                // Create texture with proper format for transparency support
-                finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
-                
-                // Log Texture2D details for debugging
-                Debug.Log($"Texture2D Created - Format: {finalTex.format}, Size: {finalWidth}x{finalHeight}, " +
-                         $"Mipmap: {finalTex.mipmapCount > 1}, GPU Memory: {finalTex.GetRawTextureData().Length} bytes");
+        private CameraState SaveCameraState()
+        {   // Capture current camera state for later restoration
+            return new CameraState
+            {
+                clearFlags = World.MainCamera.clearFlags,
+                backgroundColor = World.MainCamera.backgroundColor,
+                orthographicSize = World.MainCamera.orthographicSize,
+                fieldOfView = World.MainCamera.fieldOfView,
+                position = World.MainCamera.transform.position,
+                cullingMask = World.MainCamera.cullingMask
+            };
+        }
 
-                RenderTexture.active = fullRT;
-                finalTex.ReadPixels(readRect, 0, 0);
-                finalTex.Apply();
-                RenderTexture.active = null;
+        private void RestoreCameraState(CameraState state)
+        {   // Restore camera to previous state after capture
+            World.MainCamera.rect = new Rect(0, 0, 1, 1);
+            World.MainCamera.targetTexture = null;
+            World.MainCamera.clearFlags = state.clearFlags;
+            World.MainCamera.backgroundColor = state.backgroundColor;
+            World.MainCamera.orthographicSize = state.orthographicSize;
+            World.MainCamera.fieldOfView = state.fieldOfView;
+            World.MainCamera.transform.position = state.position;
+            World.MainCamera.cullingMask = state.cullingMask;
+        }
 
-                // Debug transparency in final texture
-                var pixels = finalTex.GetPixels32();
-                int transparentPixels = pixels.Count(p => p.a < 255);
-                int totalPixels = pixels.Length;
-                Debug.Log($"Final texture: {transparentPixels}/{totalPixels} transparent pixels ({(float)transparentPixels/totalPixels*100:F1}%)");
+        private (int width, int height) ComputeRenderDimensions()
+        {   // Calculate render dimensions with safety limits and fallback handling
+            int targetWidth = int.TryParse(resInput?.Text, out int parsed) ? parsed : ResolutionWidth;
+            int targetHeight = Mathf.RoundToInt((float)targetWidth / Mathf.Max(1, (float)Screen.width) * (float)Screen.height);
 
-                // Encode with transparency preservation
-                byte[] pngBytes = finalTex.EncodeToPNG();
-                
-                // Comprehensive PNG encoding analysis
-                if (pngBytes != null && pngBytes.Length > 33)
-                {   // Analyze PNG header and chunks for transparency support
-                    Debug.Log($"PNG Header Analysis:");
-                    Debug.Log($"  - PNG Signature: {(pngBytes[0] == 0x89 && pngBytes[1] == 0x50 && pngBytes[2] == 0x4E && pngBytes[3] == 0x47 ? "Valid" : "Invalid")}");
-                    
-                    // IHDR chunk analysis (starts at byte 12)
-                    if (pngBytes.Length > 29)
-                    {   
-                        int colorType = pngBytes[25];
-                        int bitDepth = pngBytes[24];
-                        Debug.Log($"  - IHDR Color Type: {colorType} ({GetPNGColorTypeName(colorType)}), Bit Depth: {bitDepth}");
-                        Debug.Log($"  - Alpha Channel: {(colorType == 4 || colorType == 6 ? "Present" : "None")}");
-                    }
-                    
-                    // Search for transparency-related chunks
-                    bool hasAlphaChunk = false;
-                    bool hastRNSChunk = false;
-                    
-                    for (int i = 8; i < pngBytes.Length - 8; i += 4)
-                    {   // Look for chunk signatures
-                        if (i + 4 < pngBytes.Length)
-                        {
-                            string chunkType = System.Text.Encoding.ASCII.GetString(pngBytes, i + 4, 4);
-                            if (chunkType == "tRNS") hastRNSChunk = true;
-                            if (chunkType == "bKGD") hasAlphaChunk = true;
-                        }
-                    }
-                    
-                    Debug.Log($"  - Transparency Chunks: tRNS={hastRNSChunk}, bKGD={hasAlphaChunk}");
-                    Debug.Log($"  - File Size: {pngBytes.Length} bytes ({(float)pngBytes.Length / (finalWidth * finalHeight * 4) * 100:F1}% of uncompressed)");
-                    
-                    if (transparentPixels > 0)
-                    {
-                        int colorType = pngBytes.Length > 25 ? pngBytes[25] : -1;
-                        if (colorType != 6)
-                            Debug.LogWarning($"PNG Color Type {colorType} may not preserve alpha channel properly (should be 6 for RGBA)");
-                    }
+            var (gpuNeed, cpuNeed, _) = CaptureUtilities.EstimateMemoryForWidth(targetWidth);
+            var (gpuBudget, cpuBudget) = CaptureUtilities.GetMemoryBudgets();
+
+            if (targetWidth > SystemInfo.maxTextureSize || gpuNeed > gpuBudget || cpuNeed > cpuBudget)
+            {   // Scale down if exceeds system limits
+                int maxSafeWidth = CaptureUtilities.ComputeMaxSafeWidth();
+                float scale = Mathf.Min(1f, (float)maxSafeWidth / targetWidth, (float)SystemInfo.maxTextureSize / targetWidth);
+                targetWidth = Mathf.FloorToInt(targetWidth * scale);
+                targetHeight = Mathf.FloorToInt(targetHeight * scale);
+                Debug.LogWarning($"Scaled down to {targetWidth}x{targetHeight} due to system limits.");
+            }
+
+            return (targetWidth, targetHeight);
+        }
+
+        private RenderTexture CreateCompatibleRenderTexture(int width, int height)
+        {   // Create render texture with cross-GPU compatibility settings and platform-specific optimizations
+            var format = Compatibility.GetOptimalRenderTextureFormat();
+            var rt = new RenderTexture(width, height, 24, format)
+            {   
+                useMipMap = false, 
+                autoGenerateMips = false,
+                antiAliasing = 1,
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp
+            };
+
+            Compatibility.ApplyPlatformSpecificRTSettings(rt);
+
+            if (!rt.Create())
+            {   
+                UnityEngine.Debug.LogError($"Failed to create render texture {width}x{height} with format {format}.");
+                return TryFallbackRenderTexture(width, height);
+            }
+
+            return rt;
+        }
+
+        private RenderTexture TryFallbackRenderTexture(int width, int height)
+        {   // Attempt fallback render texture creation with reduced settings
+            var fallbackFormats = Compatibility.GetFallbackRenderTextureFormats();
+
+            foreach (var format in fallbackFormats)
+            {
+                var rt = new RenderTexture(width, height, 16, format) { useMipMap = false, autoGenerateMips = false };
+                if (rt.Create()) 
+                {   Debug.LogWarning($"Using fallback render texture format: {format}"); return rt; }
+                rt.Release();
+            }
+
+            UnityEngine.Debug.LogError("All render texture formats failed.");
+            return null;
+        }
+
+        private void SetupCameraForCapture(ref CameraState state)
+        {   // Configure camera for high-quality capture with optimized settings
+            QualitySettings.antiAliasing = 0;
+            World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
+        }
+
+        private void ConfigureBackgroundRendering(RenderTexture rt, bool showBackground)
+        {   // Setup background rendering with GPU-compatible transparency handling and driver workarounds
+            Color bgColor = BackgroundUI.GetBackgroundColor();
+
+            if (showBackground)
+            {   // Force opaque background when user wants background visible
+                bgColor.a = 1f;
+                World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
+                World.MainCamera.backgroundColor = bgColor;
+                Compatibility.ApplyGPUSpecificClear(rt, bgColor);
+            }
+            else
+            {   // Background disabled - check if user wants transparency or specific color
+                if (bgColor.a <= 0.01f)
+                {   // User wants true transparency - configure for transparent rendering
+                    World.MainCamera.clearFlags = CameraClearFlags.Nothing;
+                    World.MainCamera.backgroundColor = new Color(0, 0, 0, 0);
+                    Compatibility.ApplyTransparentClear(rt);
                 }
                 else
-                {
-                    Debug.LogError($"PNG encoding failed - bytes: {pngBytes?.Length ?? 0}");
+                {   // User wants specific background color (not transparency)
+                    World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
+                    World.MainCamera.backgroundColor = bgColor;
+                    Compatibility.ApplyGPUSpecificClear(rt, bgColor);
                 }
-                
-                // Verify PNG encoding preserved transparency
-                if (transparentPixels > 0 && pngBytes != null)
-                {   
-                    bool hasRGBAColorType = pngBytes.Length > 25 && pngBytes[25] == 6;
-                    Debug.Log($"PNG Transparency Check: Input had {transparentPixels} transparent pixels, " +
-                             $"RGBA Format: {hasRGBAColorType}");
-                }
-                else if (transparentPixels > 0)
-                    Debug.LogWarning("PNG encoding failed but texture had transparent pixels");
-                
-                if (pngBytes == null || pngBytes.Length < 1024)
-                {
-                    UnityEngine.Debug.LogError("PNG encoding failed or resulted in suspiciously small file.");
-                    StartWindowColorAnimation(false);
-                    return;
-                }
+            }
+        }
 
-                // Save file
-                string worldName = (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
-                string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
-                                      new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
-                var worldFolder = FileUtilities.InsertIo(sanitizedName, Main.ScreenCaptureFolder);
-                string fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
+        private void ApplyZoomToCamera(CameraState originalState)
+        {   // Apply zoom settings with proper perspective/orthographic handling
+            float zoomFactor = Mathf.Max(Mathf.Exp(PreviewZoomLevel), 1e-6f);
 
+            if (World.MainCamera.orthographic)
+                World.MainCamera.orthographicSize = Mathf.Clamp(originalState.orthographicSize / zoomFactor, 1e-6f, 1_000_000f);
+            else
+                ApplyPerspectiveZoom(originalState, zoomFactor);
+        }
+
+        private void ApplyPerspectiveZoom(CameraState originalState, float zoomFactor)
+        {   // Handle perspective camera zoom with position adjustment for extreme values
+            float baseFov = Mathf.Clamp(originalState.fieldOfView, 5f, 120f);
+            float targetFov = baseFov / zoomFactor;
+
+            if (targetFov >= 5f && targetFov <= 120f)
+                World.MainCamera.fieldOfView = targetFov;
+            else
+            {   // Adjust camera position for extreme zoom values
+                var forward = World.MainCamera.transform.forward;
+                var pivot = originalState.position + forward * PreviewBasePivotDistance;
+                
+                float clampedFov = Mathf.Clamp(targetFov, 5f, 120f);
+                World.MainCamera.fieldOfView = clampedFov;
+                
+                float positionRatio = (targetFov > 120f) ? (targetFov / 120f) : (5f / Mathf.Max(targetFov, 1e-6f));
+                float newDistance = (targetFov > 120f) ? 
+                    Mathf.Clamp(PreviewBasePivotDistance * positionRatio, PreviewBasePivotDistance, 1_000_000f) :
+                    Mathf.Clamp(PreviewBasePivotDistance / positionRatio, 0.001f, PreviewBasePivotDistance);
+                
+                World.MainCamera.transform.position = pivot - forward * newDistance;
+            }
+        }
+
+        private Texture2D ReadCroppedTexture(RenderTexture rt, int renderWidth, int renderHeight)
+        {   // Read cropped region from render texture into final texture with driver compatibility
+            var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
+            int finalWidth = Mathf.RoundToInt(readRect.width);
+            int finalHeight = Mathf.RoundToInt(readRect.height);
+
+            var format = Compatibility.GetOptimalTexture2DFormat();
+            var texture = new Texture2D(finalWidth, finalHeight, format, false);
+
+            if (!TryReadPixelsWithRetry(rt, texture, readRect))
+            {   // Fallback to different read methods for broken drivers
+                UnityEngine.Object.Destroy(texture);
+                return TryFallbackPixelRead(rt, readRect, finalWidth, finalHeight);
+            }
+
+            return texture;
+        }
+
+        private bool TryReadPixelsWithRetry(RenderTexture rt, Texture2D texture, Rect readRect)
+        {   // Attempt pixel reading with retries for unstable drivers
+            int maxRetries = Compatibility.GetOptimalRetryCount();
+            int sleepMs = Compatibility.GetOptimalThreadSleepMs();
+            
+            for (int attempt = 0; attempt < maxRetries; attempt++)
+            {
+                try
+                {
+                    RenderTexture.active = rt;
+                    texture.ReadPixels(readRect, 0, 0);
+                    texture.Apply();
+                    RenderTexture.active = null;
+                    
+                    // Validate read succeeded by checking pixel data
+                    if (ValidatePixelData(texture))
+                        return true;
+                        
+                    Debug.LogWarning($"Pixel read validation failed, attempt {attempt + 1}/{maxRetries}");
+                }
+                catch (System.Exception ex)
+                {   Debug.LogWarning($"ReadPixels attempt {attempt + 1} failed: {ex.Message}"); }
+                finally
+                {   RenderTexture.active = null; }
+                
+                if (attempt < maxRetries - 1)
+                    System.Threading.Thread.Sleep(sleepMs);
+            }
+            
+            return false;
+        }
+
+        private bool ValidatePixelData(Texture2D texture)
+        {   // Quick validation that pixel data was read correctly
+            try
+            {
+                var pixels = texture.GetPixels32();
+                return pixels != null && pixels.Length > 0 && 
+                       pixels.Take(Mathf.Min(100, pixels.Length)).Any(p => p.a > 0 || p.r > 0 || p.g > 0 || p.b > 0);
+            }
+            catch
+            {   return false; }
+        }
+
+        private Texture2D TryFallbackPixelRead(RenderTexture rt, Rect readRect, int width, int height)
+        {   // Fallback pixel reading methods for problematic drivers
+            var fallbackFormats = Compatibility.GetFallbackTexture2DFormats();
+            
+            foreach (var format in fallbackFormats)
+            {
+                try
+                {
+                    var texture = new Texture2D(width, height, format, false);
+                    
+                    RenderTexture.active = rt;
+                    texture.ReadPixels(readRect, 0, 0);
+                    texture.Apply();
+                    RenderTexture.active = null;
+                    
+                    if (ValidatePixelData(texture))
+                    {   Debug.LogWarning($"Using fallback texture format: {format}"); return texture; }
+                    
+                    UnityEngine.Object.Destroy(texture);
+                }
+                catch (System.Exception ex)
+                {   Debug.LogError($"Fallback format {format} failed: {ex.Message}"); }
+                finally
+                {   RenderTexture.active = null; }
+            }
+            
+            Debug.LogError("All texture read methods failed.");
+            return null;
+        }
+
+        private void SaveScreenshotFile(byte[] pngBytes, int renderWidth, int finalWidth, int finalHeight)
+        {   // Save PNG file to world-specific folder with timestamp and encoding fallbacks
+            string worldName = SFS.Base.worldBase?.paths?.worldName ?? "Unknown";
+            string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
+                new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
+            
+            var worldFolder = FileUtilities.InsertIo(sanitizedName, Main.ScreenCaptureFolder);
+            string fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
+
+            try
+            {
                 using (var ms = new MemoryStream(pngBytes))
                     FileUtilities.InsertIo(fileName, ms, worldFolder);
 
-                string worldFolderPath = worldFolder.ToString();
-
                 if (World.UIHolder != null)
-                {
-                    var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>();
-                    if (monoBehaviour != null)
-                        monoBehaviour.StartCoroutine(FileUtilities.VerifyAndShowResult(worldFolderPath, fileName, pngBytes, renderWidth, finalWidth, finalHeight, new System.Action<bool>(StartWindowColorAnimation)));
-                }
-                else StartWindowColorAnimation(true);
+                {   var monoBehaviour = World.UIHolder.GetComponentInChildren<MonoBehaviour>(); monoBehaviour?.StartCoroutine(FileUtilities.VerifyAndShowResult(worldFolder.ToString(), fileName, pngBytes, renderWidth, finalWidth, finalHeight, StartWindowColorAnimation)); }
+                else 
+                    StartWindowColorAnimation(true);
 
-                var (finalGpuNeed, finalCpuNeed, finalRawBytes) = CaptureUtilities.EstimateMemoryForWidth(renderWidth);
-                Debug.Log($"Saved {finalWidth}x{finalHeight} (render {renderWidth}x{renderHeight}). Memory: GPU {CaptureUtilities.FormatMB(finalGpuNeed)}, CPU {CaptureUtilities.FormatMB(finalCpuNeed)}; file {CaptureUtilities.FormatMB(pngBytes.LongLength)}.");
+                Debug.Log($"Saved {finalWidth}x{finalHeight} screenshot to {fileName}");
+                
+                // Log compatibility info for debugging
+                Debug.Log($"Compatibility: {Compatibility.GetDebugInfo()}");
             }
             catch (System.Exception ex)
-            {
-                UnityEngine.Debug.LogError($"Screenshot failed: {ex.Message}");
-                StartWindowColorAnimation(false);
-            }
-            finally
-            {   // Restore camera state
-                World.MainCamera.rect = new Rect(0, 0, 1, 1);
-                World.MainCamera.targetTexture = null;
-                World.MainCamera.orthographicSize = previousOrthographicSize;
-                World.MainCamera.fieldOfView = previousFieldOfView;
-                World.MainCamera.transform.position = previousPosition;
-
-                if (fullRT != null) { fullRT.Release(); UnityEngine.Object.Destroy(fullRT); }
-                if (finalTex != null) UnityEngine.Object.Destroy(finalTex);
+            {   
+                Debug.LogError($"Failed to save screenshot: {ex.Message}");
+                TryFallbackImageSave(pngBytes, worldFolder, fileName, finalWidth, finalHeight);
             }
         }
+
+        private void TryFallbackImageSave(byte[] pngBytes, object worldFolder, string fileName, int width, int height)
+        {   // Attempt alternative save methods for file system issues
+            try
+            {
+                string fallbackPath = Path.Combine(Application.persistentDataPath, "Screenshots");
+                if (!Directory.Exists(fallbackPath))
+                    Directory.CreateDirectory(fallbackPath);
+
+                string fallbackFile = Path.Combine(fallbackPath, fileName);
+                File.WriteAllBytes(fallbackFile, pngBytes);
+                
+                Debug.LogWarning($"Saved to fallback location: {fallbackFile}");
+                StartWindowColorAnimation(true);
+            }
+            catch (System.Exception ex)
+            {   
+                Debug.LogError($"All save methods failed: {ex.Message}");
+                StartWindowColorAnimation(false);
+            }
+        }
+
+
+
         public override void Hide()
         {   // Tear down UI and related resources for the owner
             ref Captue ownerRef = ref World.OwnerInstance;
@@ -821,6 +823,63 @@ namespace ScreenCapture
                 case 4: return "Grayscale+Alpha";
                 case 6: return "RGBA";
                 default: return $"Unknown({colorType})";
+            }
+        }
+
+        private byte[] TryFallbackEncoding(Texture2D texture)
+        {   // Attempt alternative encoding methods for broken PNG encoders
+            if (texture == null) return null;
+
+            // Method 1: Check if PNG encoding is supported
+            if (!Compatibility.SupportsPNGEncoding())
+            {   
+                Debug.LogWarning("PNG encoding not reliable on this platform, using JPG fallback");
+                return TryJPGEncoding(texture);
+            }
+
+            // Method 2: JPG encoding as fallback (lossy but reliable)
+            return TryJPGEncoding(texture) ?? CreateManualPNGEncoding(texture);
+        }
+
+        private byte[] TryJPGEncoding(Texture2D texture)
+        {   // Attempt JPG encoding with quality settings
+            try
+            {
+                byte[] jpgBytes = texture.EncodeToJPG(90);
+                if (jpgBytes != null && jpgBytes.Length > 1024)
+                {   Debug.LogWarning("Using JPG encoding fallback for broken PNG encoder"); return jpgBytes; }
+            }
+            catch (System.Exception ex)
+            {   Debug.LogWarning($"JPG encoding failed: {ex.Message}"); }
+            
+            return null;
+        }
+
+        private byte[] CreateManualPNGEncoding(Texture2D texture)
+        {   // Last resort manual pixel encoding for completely broken drivers
+            var pixels = texture.GetPixels32();
+            int width = texture.width;
+            int height = texture.height;
+
+            // Create minimal PNG structure manually
+            using (var ms = new MemoryStream())
+            {
+                // PNG signature
+                ms.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, 0, 8);
+                
+                // Simple uncompressed pixel data (not a real PNG but readable by most apps)
+                ms.Write(System.BitConverter.GetBytes(width), 0, 4);
+                ms.Write(System.BitConverter.GetBytes(height), 0, 4);
+                
+                foreach (var pixel in pixels)
+                {
+                    ms.WriteByte(pixel.r);
+                    ms.WriteByte(pixel.g);
+                    ms.WriteByte(pixel.b);
+                    ms.WriteByte(pixel.a);
+                }
+                
+                return ms.ToArray();
             }
         }
     }

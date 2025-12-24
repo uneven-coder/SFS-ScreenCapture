@@ -147,6 +147,10 @@ namespace FrameEmbededState
                 hook.hideFlags = HideFlags.HideAndDontSave;
                 hook.Bind(this, cam);
             }
+
+            // Invalidate CPU frame and async state so new camera gets a fresh frame
+            _s.HaveCpuFrame = false;
+            _s.ReadbackInFlight = false;
         }
 
         private void Detach()
@@ -179,6 +183,10 @@ namespace FrameEmbededState
 
             UiBlurOverrideTexture = null;
             Shader.SetGlobalTexture(GlobalUiBackgroundTexId, null);
+
+            // Invalidate CPU frame and async state on detach
+            _s.HaveCpuFrame = false;
+            _s.ReadbackInFlight = false;
         }
 
         private void Disable()
@@ -210,6 +218,16 @@ namespace FrameEmbededState
             bool cameraMustPassthrough =
                 settings.RenderMode == OverlayRenderMode.Exclusive ||
                 settings.RenderMode == OverlayRenderMode.OnTop;
+
+            // Invalidate CPU frame at the start of every render to force update
+            _s.HaveCpuFrame = false;
+
+            // Invalidate CPU frame if resolution changes
+            if (_s.Width != srcRT.width || _s.Height != srcRT.height)
+            {
+                _s.HaveCpuFrame = false;
+                _s.ReadbackInFlight = false;
+            }
 
             if (safe.MinIntervalSeconds > 0f && (now - _s.LastProcessedTime) < safe.MinIntervalSeconds)
             {
@@ -448,6 +466,17 @@ namespace FrameEmbededState
                 _s.FullscreenCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
                 _s.FullscreenCanvas.sortingOrder = short.MaxValue;
                 _s.FullscreenCanvas.overrideSorting = true;
+
+                // Prevent overlay from blocking input
+                var raycaster = _s.FullscreenCanvas.GetComponent<GraphicRaycaster>();
+                if (raycaster != null)
+                    raycaster.blockingObjects = GraphicRaycaster.BlockingObjects.None;
+                var cg = _s.FullscreenCanvas.GetComponent<CanvasGroup>();
+                if (cg == null)
+                    cg = _s.FullscreenCanvas.gameObject.AddComponent<CanvasGroup>();
+                cg.blocksRaycasts = false;
+                cg.interactable = false;
+
                 return;
             }
 
@@ -459,7 +488,13 @@ namespace FrameEmbededState
             canvas.sortingOrder = short.MaxValue;
             canvas.overrideSorting = true;
 
-            root.AddComponent<GraphicRaycaster>();
+            var raycasterNew = root.AddComponent<GraphicRaycaster>();
+            raycasterNew.blockingObjects = GraphicRaycaster.BlockingObjects.None;
+
+            // Prevent overlay from blocking input
+            var cgNew = root.AddComponent<CanvasGroup>();
+            cgNew.blocksRaycasts = false;
+            cgNew.interactable = false;
 
             var imgGO = new GameObject("VisualOverlay.FullscreenRawImage");
             imgGO.hideFlags = HideFlags.HideAndDontSave;
@@ -751,10 +786,6 @@ namespace FrameEmbededState
             public Dictionary<int, List<int>> ObjectVisiblePixels; // objectId -> pixel indices
             public int[] MaskBuffer; // per-pixel objectId
             public Renderer[] MaskIdToRenderer; // objectId -> Renderer
-
-            // NEW: object-target hooks
-            public Renderer[] TargetRenderers;
-            public Material[] TargetMaterials;
         }
 
         public sealed class SafeOptions

@@ -43,45 +43,22 @@ namespace FrameEmbededState
 
             MainUi.SetOverlayManager(overlay);
             MainUi.Init();
-            // Camera cam = GameCamerasManager.main?.world_Camera?.camera ?? GameCamerasManager.main?.scaledWorld_Camera?.camera;
-            // Camera cam = SFS.Cameras.ActiveCamera.Camera.camera;
-            
-            SceneManager.sceneLoaded += (_, __) =>
-            {
-                Camera cam = GameCamerasManager.main?.world_Camera?.camera;
+
+            // Always use the current world camera for overlay
+            void SetOverlayToCurrentCamera()
+            {   // Set overlay to current world camera
+                var cam = GameCamerasManager.main?.world_Camera?.camera;
                 if (cam == null) return;
-
-                overlay.VisualManager(settings =>
-                {
-                    settings.TargetCamera = cam;
-                    settings.Enable = false; // No shader enabled by default
-                });
-            };
-
-            // Ensure overlay target camera is set on SceneHelper-driven loads as well
-            SceneHelper.OnWorldSceneLoaded += () =>
-            {   // Bind overlay to current world camera when world scene finishes loading
-            Camera cam = GameCamerasManager.main?.world_Camera?.camera;
-                if (cam == null) return;
-
                 overlay.VisualManager(settings =>
                 {
                     settings.TargetCamera = cam;
                     settings.Enable = false;
                 });
-            };
+            }
 
-            SceneHelper.OnBuildSceneLoaded += () =>
-            {   // Bind overlay to current build camera when build scene finishes loading
-                Camera cam = GameCamerasManager.main?.world_Camera?.camera;
-                if (cam == null) return;
-
-                overlay.VisualManager(settings =>
-                {
-                    settings.TargetCamera = cam;
-                    settings.Enable = false;
-                });
-            };
+            SceneManager.sceneLoaded += (_, __) => SetOverlayToCurrentCamera();
+            SceneHelper.OnWorldSceneLoaded += SetOverlayToCurrentCamera;
+            SceneHelper.OnBuildSceneLoaded += SetOverlayToCurrentCamera;
         }
     }
 }

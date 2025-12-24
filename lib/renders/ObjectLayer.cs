@@ -45,8 +45,8 @@ namespace FrameEmbededState.Lib.Renders
                 ObjectVisiblePixels = default,
                 MaskBuffer = default,
                 MaskIdToRenderer = activeRenderers,
-                TargetRenderers = activeRenderers,
-                TargetMaterials = mats
+                // TargetRenderers = activeRenderers,
+                // TargetMaterials = mats
             };
 
             settings.Execute(frame);

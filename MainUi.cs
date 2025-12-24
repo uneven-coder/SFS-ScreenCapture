@@ -28,14 +28,14 @@ namespace FrameEmbededState
         public static void Init()
         {   // Attach/detach UI on scene load/unload
 
-            // FrameEmbededState.dataMosh.EnsureRegistered();
+            FrameEmbededState.dataMosh.EnsureRegistered();
             FrameEmbededState.oldFilter.EnsureRegistered();
-            // FrameEmbededState.FrameWatermarkEncoder.EnsureRegistered();
-            // FrameEmbededState.spaceShader.EnsureRegistered();
-            // FrameEmbededState.WaterShader.EnsureRegistered();
-            // FrameEmbededState.ChristmasCozyShader.EnsureRegistered();
-            // FrameEmbededState.Moebius.EnsureRegistered(); // <-- Add Moebius shader registration
-            FrameEmbededState.ObjectRgbCycle.EnsureRegistered();
+            FrameEmbededState.FrameWatermarkEncoder.EnsureRegistered();
+            FrameEmbededState.spaceShader.EnsureRegistered();
+            FrameEmbededState.WaterShader.EnsureRegistered();
+            FrameEmbededState.ChristmasCozyShader.EnsureRegistered();
+            FrameEmbededState.Moebius.EnsureRegistered(); // <-- Add Moebius shader registration
+            // FrameEmbededState.ObjectRgbCycle.EnsureRegistered();
 
             SceneHelper.OnWorldSceneLoaded += CreateUI;
             SceneHelper.OnBuildSceneLoaded += CreateUI;
@@ -62,10 +62,10 @@ namespace FrameEmbededState
 
             shaderButtons = new System.Collections.Generic.List<(GameObject, Color)>();
 
-            // If overlay manager exists, try to bind it to the current camera immediately
+            // Always use the current world camera for overlay
             if (overlayManager != null)
-            {   // Attempt to get the active game camera (preferred) or fallback to Camera.main
-                var cam = GameCamerasManager.main?.world_Camera?.camera ?? Camera.main;
+            {
+                var cam = GameCamerasManager.main?.world_Camera?.camera;
                 if (cam != null)
                     overlayManager.VisualManager(s => { s.TargetCamera = cam; s.Enable = false; });
             }
@@ -147,9 +147,8 @@ namespace FrameEmbededState
             if (updateSelection)
                 selectedShader = idx;
 
-            // Ensure a camera is provided to VisualManager so the overlay can attach.
-            var cam = GameCamerasManager.main?.world_Camera?.camera ?? Camera.main;
-
+            // Always use the current world camera for overlay
+            var cam = GameCamerasManager.main?.world_Camera?.camera;
             overlayManager.VisualManager(settings =>
             {   // bind to camera if available and enable this effect
                 settings.TargetCamera = cam;
@@ -157,7 +156,6 @@ namespace FrameEmbededState
                 settings.Execute = frameData => shaders[idx].effect(settings);
             });
 
-            // update visuals after change
             UpdateButtonHighlights();
         }
 
@@ -170,7 +168,7 @@ namespace FrameEmbededState
             if (selectedShader == idx)
             {
                 selectedShader = -1;
-                var cam = GameCamerasManager.main?.world_Camera?.camera ?? Camera.main;
+                var cam = GameCamerasManager.main?.world_Camera?.camera;
                 overlayManager.VisualManager(s => { s.TargetCamera = cam; s.Enable = false; });
             }
             else

@@ -1,8 +1,6 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using Unity.Collections;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -11,238 +9,269 @@ namespace FrameEmbededState.Lib.Renders
 {
     public static class ObjectTarget
     {
-        private static Texture2D _cpuSrcTex;
-        private static Texture2D _cpuDstTex;
-        private static NativeArray<Color32> _cpuSrc;
-        private static NativeArray<Color32> _cpuDst;
-        private static int _cpuWidth;
-        private static int _cpuHeight;
-        private static Rect _cpuRect;
-        private static int _frameCount;
-        private static int _lastLogFrame;
+        sealed class Cache
+        {
+            public int NextRebuildFrame;
+            public int TargetsKey;
+            public Renderer[] Renderers = Array.Empty<Renderer>();
+            public Material[] Materials = Array.Empty<Material>();
+            public VisualOverlayManager.RendererMaterialGroup[] Groups = Array.Empty<VisualOverlayManager.RendererMaterialGroup>();
+            public VisualOverlayManager.ModelTextureData[] Models = Array.Empty<VisualOverlayManager.ModelTextureData>();
+            public Dictionary<int, MaterialBackup> OriginalMaterialData = new Dictionary<int, MaterialBackup>();
+        }
+
+        sealed class MaterialBackup
+        {
+            public Texture ColorTexture;
+            public Texture NormalTexture;
+            public MaterialPropertyBlock[] PropertyBlocks;
+            public Material[] OriginalMaterials;
+        }
+
+        static readonly Dictionary<int, Cache> _cacheBySettingsId = new Dictionary<int, Cache>();   
+
+        static Texture2D _cpuSrcTex;
+        static Texture2D _cpuDstTex;
+        static NativeArray<Color32> _cpuSrc;
+        static NativeArray<Color32> _cpuDst;
+        static int _w, _h;
+        static Rect _rect;
 
         public static void Render(
             VisualOverlayManager.VisualOverlaySettings settings,
             RenderTexture srcRT,
             Renderer[] objectRenderers)
         {
-            // Convert the renderer list into root objects so we can collect:
-            // - all child renderers
-            // - custom mesh modules (PipeMesh/PolygonMesh/BaseMesh)
-            // - ModelSetup components + their renderers
-            if (objectRenderers == null || objectRenderers.Length == 0)
-            {
-                Render(settings, srcRT, Array.Empty<object>());
+            if (settings == null || settings.Execute == null || srcRT == null)
                 return;
-            }
 
-            object[] roots = objectRenderers
-                .Where(r => r != null)
-                .Select(r =>
-                {
-                    var t = r.transform;
-                    return (object)((t != null && t.root != null) ? t.root.gameObject : r.gameObject);
-                })
-                .Distinct()
-                .ToArray();
-
-            Render(settings, srcRT, roots.Length > 0 ? roots : (object[])objectRenderers);
+            var roots = ResolveRoots(objectRenderers);
+            Render(settings, srcRT, roots);
         }
 
-        public static void Render(
+        static void Render(
             VisualOverlayManager.VisualOverlaySettings settings,
             RenderTexture srcRT,
-            object[] targets)
-        {   // Main render entry point for ObjectTarget mode with material manipulation, runs every frame to maintain effect
-            // Collects ALL renderers from hierarchy regardless of component type to catch custom SFS part systems
-            if (settings == null || settings.Execute == null)
-            {
-                if (_frameCount % 300 == 0) Debug.LogWarning("[ObjectTarget] Settings or Execute callback is null");
-                _frameCount++;
-                return;
-            }
-
-            var groups = new List<VisualOverlayManager.RendererMaterialGroup>();
-            var modelDataList = new List<VisualOverlayManager.ModelTextureData>();
-            var seenRenderers = new HashSet<Renderer>();
-
-            var resolvedRenderers = ResolveRenderers(targets);
-            if (resolvedRenderers != null)
-            {
-                foreach (var renderer in resolvedRenderers)
-                {
-                    if (renderer == null || !seenRenderers.Add(renderer)) continue;
-
-                    var materials = renderer.materials;
-                    if (materials == null || materials.Length == 0) continue;
-
-                    groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = renderer, Materials = materials });
-                }
-            }
-
-            var meshModules = ResolveMeshModules(targets);
-            if (meshModules != null)
-            {
-                foreach (var module in meshModules)
-                {
-                    if (module == null) continue;
-
-                    var moduleRenderer = module.GetComponent<Renderer>();
-                    if (moduleRenderer == null || !moduleRenderer.enabled || !moduleRenderer.gameObject.activeInHierarchy || !seenRenderers.Add(moduleRenderer)) continue;
-
-                    var materials = moduleRenderer.materials;
-                    if (materials == null || materials.Length == 0) continue;
-
-                    groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = moduleRenderer, Materials = materials });
-                }
-            }
-
-            var modelSetups = ResolveModelSetups(targets);
-            if (modelSetups != null)
-            {
-                foreach (var setup in modelSetups)
-                {
-                    if (setup.MeshRenderers == null) continue;
-
-                    foreach (var meshRenderer in setup.MeshRenderers)
-                    {
-                        if (meshRenderer == null || !meshRenderer.enabled || !meshRenderer.gameObject.activeInHierarchy || !seenRenderers.Add(meshRenderer)) continue;
-
-                        modelDataList.Add(new VisualOverlayManager.ModelTextureData
-                        {
-                            Renderer = meshRenderer, ColorTexture = setup.ColorTex, NormalTexture = setup.NormalTex,
-                            UseNormals = setup.UseNormals, Smoothness = setup.Smoothness
-                        });
-
-                        var materials = meshRenderer.materials;
-                        if (materials != null && materials.Length > 0)
-                            groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = meshRenderer, Materials = materials });
-                    }
-                }
-            }
-
-            var partComponents = ResolvePartComponents(targets);
-            if (partComponents != null)
-            {
-                foreach (var part in partComponents)
-                {
-                    if (part == null) continue;
-
-                    var partRenderers = part.GetComponentsInChildren<Renderer>(true);
-                    foreach (var renderer in partRenderers)
-                    {
-                        if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || !seenRenderers.Add(renderer)) continue;
-
-                        var materials = renderer.materials;
-                        if (materials != null && materials.Length > 0)
-                            groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = renderer, Materials = materials });
-                    }
-                }
-            }
-
-            var allRootObjects = CollectRootGameObjects(targets);
-            foreach (var rootObj in allRootObjects)
-            {
-                if (rootObj == null) continue;
-
-                var allRenderers = rootObj.GetComponentsInChildren<Renderer>(true);
-                foreach (var renderer in allRenderers)
-                {
-                    if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || !seenRenderers.Add(renderer)) continue;
-
-                    var materials = renderer.materials;
-                    if (materials != null && materials.Length > 0)
-                        groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = renderer, Materials = materials });
-                }
-            }
-
-            bool shouldLog = _frameCount - _lastLogFrame >= 60;
-            if (shouldLog)
-            {
-                Debug.Log($"[ObjectTarget] Frame {_frameCount}: {groups.Count} renderer groups ({seenRenderers.Count} unique), {modelDataList.Count} models, {partComponents?.Length ?? 0} parts");
-                var sampleCount = Mathf.Min(5, groups.Count);
-                for (int i = 0; i < sampleCount; i++)
-                {
-                    var g = groups[i];
-                    if (g.Renderer != null)
-                        Debug.Log($"[ObjectTarget] Sample {i}: {g.Renderer.gameObject.name} | materials={g.Materials?.Length ?? 0} | shader={g.Materials?[0]?.shader?.name ?? "null"}");
-                }
-            }
-
-            _frameCount++;
-
-            if (groups.Count == 0 && modelDataList.Count == 0)
-            {
-                if (shouldLog) Debug.LogWarning("[ObjectTarget] No valid renderers or models found");
-                return;
-            }
-
-            if (srcRT == null)
-            {
-                if (shouldLog) Debug.LogWarning("[ObjectTarget] Source RenderTexture is null");
-                return;
-            }
-
+            GameObject[] roots)
+        {   // Execute render pipeline and track if this is first-time setup
             EnsureCpuBuffers(srcRT.width, srcRT.height);
 
+            int sid = settings.GetHashCode();
+            bool isFirstSetup = !_cacheBySettingsId.TryGetValue(sid, out var cache);
+            
+            if (isFirstSetup)
+            {
+                cache = new Cache();
+                _cacheBySettingsId[sid] = cache;
+            }
+
+            int frameCount = Time.frameCount;
+            int key = ComputeTargetsKey(roots);
+
+            if (frameCount >= cache.NextRebuildFrame || cache.TargetsKey != key)
+            {
+                cache.TargetsKey = key;
+                cache.NextRebuildFrame = frameCount + 30;
+                RebuildCache(cache, roots, isFirstSetup);
+            }
+
+            // Read src to CPU
             var prev = RenderTexture.active;
             RenderTexture.active = srcRT;
-            _cpuSrcTex.ReadPixels(_cpuRect, 0, 0, false);
+            _cpuSrcTex.ReadPixels(_rect, 0, 0, false);
             RenderTexture.active = prev;
 
             CopyNative(_cpuSrc, _cpuDst);
 
-            var frameData = new VisualOverlayManager.FrameData
+            var frame = new VisualOverlayManager.FrameData
             {
-                Source = _cpuSrc, Result = _cpuDst, Width = _cpuWidth, Height = _cpuHeight,
-                RendererMaterials = groups.ToArray(), ModelTextures = modelDataList.ToArray()
+                Source = _cpuSrc,
+                Result = _cpuDst,
+                Width = _w,
+                Height = _h,
+
+                // compiled target data
+                Renderers = cache.Renderers,
+                Materials = cache.Materials,
+                RendererMaterials = cache.Groups,
+                ModelTextures = cache.Models,
+
+                MaterialsDirty = false
             };
 
-            settings.Execute(frameData);
+            settings.Execute(frame);
 
-            var updatedGroups = frameData.RendererMaterials;
-            if (updatedGroups != null)
+            // Only re-apply if an effect actually changed materials
+            if (frame.MaterialsDirty && frame.RendererMaterials != null)
             {
-                for (int i = 0; i < updatedGroups.Length; i++)
+                var groups = frame.RendererMaterials;
+                for (int i = 0; i < groups.Length; i++)
                 {
-                    var g = updatedGroups[i];
-                    if (g.Renderer == null || g.Materials == null) continue;
-
-                    g.Renderer.materials = g.Materials;
+                    var g = groups[i];
+                    if (g.Renderer != null && g.Materials != null)
+                        g.Renderer.materials = g.Materials;
                 }
+            }
 
-                if (shouldLog) Debug.Log($"[ObjectTarget] Materials applied to {updatedGroups.Length} renderers");
+            // NOTE: Writing frame.Result back to GPU depends on how VisualOverlayManager composites.
+            // If you need it here, you’d upload _cpuDstTex and blit; otherwise leave as your pipeline already does.
+        }
+
+        static GameObject[] ResolveRoots(Renderer[] renderers)
+        {
+            if (renderers == null || renderers.Length == 0)
+                return Array.Empty<GameObject>();
+
+            // no LINQ (allocation-free)
+            var roots = new List<GameObject>(8);
+            var seen = new HashSet<int>();
+
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var r = renderers[i];
+                if (r == null) continue;
+                var root = r.transform != null && r.transform.root != null
+                    ? r.transform.root.gameObject
+                    : r.gameObject;
+
+                if (root == null) continue;
+                int id = root.GetInstanceID();
+                if (seen.Add(id)) roots.Add(root);
+            }
+
+            return roots.Count == 0 ? Array.Empty<GameObject>() : roots.ToArray();
+        }
+
+        static int ComputeTargetsKey(GameObject[] roots)
+        {
+            unchecked
+            {
+                int h = 17;
+                if (roots != null)
+                {
+                    for (int i = 0; i < roots.Length; i++)
+                        h = h * 31 + (roots[i] ? roots[i].GetInstanceID() : 0);
+                }
+                return h;
             }
         }
 
-        public static void Release()
-        {   // Clean up CPU buffers and reset frame counter
+        static void RebuildCache(Cache cache, GameObject[] roots, bool captureOriginals)
+        {   // Rebuild cache and optionally capture original material state on first run only
+            var renderers = new List<Renderer>(128);
+            var rendererSeen = new HashSet<int>();
+
+            var groups = new List<VisualOverlayManager.RendererMaterialGroup>(128);
+
+            var materials = new List<Material>(256);
+            var materialSeen = new HashSet<int>();
+
+            var models = new List<VisualOverlayManager.ModelTextureData>(128);
+            
+            if (captureOriginals)
+                cache.OriginalMaterialData.Clear();
+
+            if (roots != null)
+            {
+                for (int ri = 0; ri < roots.Length; ri++)
+                {
+                    var root = roots[ri];
+                    if (!root) continue;
+
+                    var rs = root.GetComponentsInChildren<Renderer>(true);
+                    for (int i = 0; i < rs.Length; i++)
+                    {
+                        var r = rs[i];
+                        if (r == null || !r.enabled || !r.gameObject.activeInHierarchy) continue;
+
+                        int rid = r.GetInstanceID();
+                        if (!rendererSeen.Add(rid)) continue;
+
+                        renderers.Add(r);
+
+                        var mats = r.materials;
+                        if (mats != null && mats.Length > 0)
+                        {
+                            groups.Add(new VisualOverlayManager.RendererMaterialGroup { Renderer = r, Materials = mats });
+
+                            for (int m = 0; m < mats.Length; m++)
+                            {
+                                var mat = mats[m];
+                                if (mat == null) continue;
+                                int mid = mat.GetInstanceID();
+                                if (materialSeen.Add(mid)) materials.Add(mat);
+                            }
+
+                            if (captureOriginals && !cache.OriginalMaterialData.ContainsKey(rid))
+                            {   // Only capture on first setup, never overwrite existing backups
+                                var mpbBackup = new MaterialPropertyBlock[mats.Length];
+                                var originalMats = new Material[mats.Length];
+                                
+                                for (int m = 0; m < mats.Length; m++)
+                                {
+                                    mpbBackup[m] = new MaterialPropertyBlock();
+                                    r.GetPropertyBlock(mpbBackup[m], m);
+                                    originalMats[m] = mats[m];
+                                }
+
+                                var backup = new MaterialBackup { PropertyBlocks = mpbBackup, OriginalMaterials = originalMats };
+
+                                if (mats[0] != null && mats[0].HasProperty("_ColorTexture"))
+                                    backup.ColorTexture = mats[0].GetTexture("_ColorTexture");
+                                if (mats[0] != null && mats[0].HasProperty("_NormalMap"))
+                                    backup.NormalTexture = mats[0].GetTexture("_NormalMap");
+
+                                cache.OriginalMaterialData[rid] = backup;
+                            }
+
+                            if (r is MeshRenderer mr && mats[0] != null)
+                            {   // Use backed-up textures if available, otherwise current
+                                Texture2D colorTex = null;
+                                Texture2D normalTex = null;
+                                
+                                if (cache.OriginalMaterialData.TryGetValue(rid, out var existing))
+                                {
+                                    colorTex = existing.ColorTexture as Texture2D;
+                                    normalTex = existing.NormalTexture as Texture2D;
+                                }
+                                else if (mats[0] != null)
+                                {
+                                    if (mats[0].HasProperty("_ColorTexture"))
+                                        colorTex = mats[0].GetTexture("_ColorTexture") as Texture2D;
+                                    if (mats[0].HasProperty("_NormalMap"))
+                                        normalTex = mats[0].GetTexture("_NormalMap") as Texture2D;
+                                }
+
+                                models.Add(new VisualOverlayManager.ModelTextureData
+                                {
+                                    Renderer = mr,
+                                    ColorTexture = colorTex,
+                                    NormalTexture = normalTex,
+                                    UseNormals = normalTex != null,
+                                    Smoothness = mats[0].HasProperty("_Smoothness") ? mats[0].GetFloat("_Smoothness") : 0.5f
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            cache.Renderers = renderers.Count == 0 ? Array.Empty<Renderer>() : renderers.ToArray();
+            cache.Groups = groups.Count == 0 ? Array.Empty<VisualOverlayManager.RendererMaterialGroup>() : groups.ToArray();
+            cache.Materials = materials.Count == 0 ? Array.Empty<Material>() : materials.ToArray();
+            cache.Models = models.Count == 0 ? Array.Empty<VisualOverlayManager.ModelTextureData>() : models.ToArray();
+        }
+
+        static void EnsureCpuBuffers(int w, int h)
+        {
+            if (_cpuSrcTex != null && _w == w && _h == h)
+                return;
+
             if (_cpuSrcTex != null) Object.Destroy(_cpuSrcTex);
             if (_cpuDstTex != null) Object.Destroy(_cpuDstTex);
 
-            _cpuSrcTex = null;
-            _cpuDstTex = null;
-            _cpuSrc = default;
-            _cpuDst = default;
-            _cpuWidth = _cpuHeight = 0;
-            _frameCount = 0;
-            _lastLogFrame = 0;
-        }
-
-        private static void EnsureCpuBuffers(int w, int h)
-        {
-            if (_cpuSrcTex != null && _cpuWidth == w && _cpuHeight == h)
-                return;
-
-            if (_cpuSrcTex != null)
-                Object.Destroy(_cpuSrcTex);
-
-            if (_cpuDstTex != null)
-                Object.Destroy(_cpuDstTex);
-
-            _cpuWidth = w;
-            _cpuHeight = h;
-            _cpuRect = new Rect(0, 0, w, h);
+            _w = w; _h = h;
+            _rect = new Rect(0, 0, w, h);
 
             _cpuSrcTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
             _cpuDstTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
@@ -251,361 +280,54 @@ namespace FrameEmbededState.Lib.Renders
             _cpuDst = _cpuDstTex.GetRawTextureData<Color32>();
         }
 
-        private static void CopyNative(NativeArray<Color32> from, NativeArray<Color32> to)
+        static void CopyNative(NativeArray<Color32> from, NativeArray<Color32> to)
         {
-            int n = Mathf.Min(from.Length, to.Length);
-            for (int i = 0; i < n; i++)
-                to[i] = from[i];
+            int n = from.Length < to.Length ? from.Length : to.Length;
+            for (int i = 0; i < n; i++) to[i] = from[i];
         }
 
-        private static Renderer[] ResolveRenderers(object[] targets)
-        {
-            if (targets == null || targets.Length == 0)
-                return Array.Empty<Renderer>();
+        public static void Release()
+        {   // Release resources and restore materials to original state
+            foreach (var kvp in _cacheBySettingsId)
+                RestoreMaterials(kvp.Value);
 
-            var resolved = new List<Renderer>();
-            var seen = new HashSet<Renderer>();
-            foreach (var target in targets)
-            {
-                if (target == null)
-                    continue;
+            if (_cpuSrcTex != null) Object.Destroy(_cpuSrcTex);
+            if (_cpuDstTex != null) Object.Destroy(_cpuDstTex);
 
-                foreach (var renderer in EnumerateRenderers(target))
-                {
-                    if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
-                        continue;
+            _cpuSrcTex = null;
+            _cpuDstTex = null;
+            _cpuSrc = default;
+            _cpuDst = default;
+            _w = _h = 0;
 
-                    if (seen.Add(renderer))
-                        resolved.Add(renderer);
-                }
-            }
-
-            return resolved.Count == 0 ? Array.Empty<Renderer>() : resolved.ToArray();
+            _cacheBySettingsId.Clear();
         }
 
-        private static IEnumerable<Renderer> EnumerateRenderers(object target)
-        {
-            if (target is Renderer renderer)
-            {
-                yield return renderer;
-                yield break;
-            }
+        static void RestoreMaterials(Cache cache)
+        {   // Restore renderers to their original material state using saved property blocks
+            if (cache == null || cache.OriginalMaterialData == null) return;
 
-            if (target is IEnumerable<Renderer> rendererEnumerable)
+            foreach (var kvp in cache.OriginalMaterialData)
             {
-                foreach (var ren in rendererEnumerable)
-                    yield return ren;
-                yield break;
-            }
+                int rid = kvp.Key;
+                var backup = kvp.Value;
+                var renderer = cache.Renderers.FirstOrDefault(r => r != null && r.GetInstanceID() == rid);
 
-            if (target is IEnumerable enumerable && !(target is string))
-            {
-                foreach (var entry in enumerable)
+                if (renderer != null)
                 {
-                    foreach (var child in EnumerateRenderers(entry))
-                        yield return child;
-                }
-                yield break;
-            }
+                    if (backup.OriginalMaterials != null && backup.OriginalMaterials.Length > 0)
+                        renderer.materials = backup.OriginalMaterials;
 
-            if (target is GameObject gameObject)
-            {
-                foreach (var childRenderer in gameObject.GetComponentsInChildren<Renderer>(true))
-                    yield return childRenderer;
-                yield break;
-            }
-
-            if (target is Component component)
-            {
-                foreach (var childRenderer in component.GetComponentsInChildren<Renderer>(true))
-                    yield return childRenderer;
-            }
-        }
-
-        private static Component[] ResolveMeshModules(object[] targets)
-        {
-            if (targets == null || targets.Length == 0)
-                return Array.Empty<Component>();
-
-            var resolved = new List<Component>();
-            var seen = new HashSet<Component>();
-
-            foreach (var target in targets)
-            {
-                if (target == null)
-                    continue;
-
-                foreach (var module in EnumerateMeshModules(target))
-                {
-                    if (module == null || !module.gameObject.activeInHierarchy)
-                        continue;
-
-                    if (seen.Add(module))
-                        resolved.Add(module);
-                }
-            }
-
-            return resolved.Count == 0 ? Array.Empty<Component>() : resolved.ToArray();
-        }
-
-        private static IEnumerable<Component> EnumerateMeshModules(object target)
-        {
-            if (target == null)
-                yield break;
-
-            var targetType = target.GetType();
-            if (targetType.Name == "PipeMesh" || targetType.Name == "PolygonMesh" ||
-                targetType.Name == "SimplePipe" || targetType.BaseType?.Name == "BaseMesh")
-            {
-                yield return target as Component;
-                yield break;
-            }
-
-            if (target is IEnumerable enumerable && !(target is string))
-            {
-                foreach (var entry in enumerable)
-                {
-                    foreach (var child in EnumerateMeshModules(entry))
-                        yield return child;
-                }
-                yield break;
-            }
-
-            if (target is GameObject gameObject)
-            {
-                foreach (var module in gameObject.GetComponentsInChildren<Component>(true))
-                {
-                    if (module == null)
-                        continue;
-
-                    var moduleType = module.GetType();
-                    if (moduleType.Name == "PipeMesh" || moduleType.Name == "PolygonMesh" ||
-                        moduleType.Name == "SimplePipe" || moduleType.BaseType?.Name == "BaseMesh")
-                        yield return module;
-                }
-                yield break;
-            }
-
-            if (target is Component component)
-            {
-                foreach (var module in component.GetComponentsInChildren<Component>(true))
-                {
-                    if (module == null)
-                        continue;
-
-                    var moduleType = module.GetType();
-                    if (moduleType.Name == "PipeMesh" || moduleType.Name == "PolygonMesh" ||
-                        moduleType.Name == "SimplePipe" || moduleType.BaseType?.Name == "BaseMesh")
-                        yield return module;
-                }
-            }
-        }
-
-        private static ModelSetupInfo[] ResolveModelSetups(object[] targets)
-        {
-            if (targets == null || targets.Length == 0)
-                return Array.Empty<ModelSetupInfo>();
-
-            var resolved = new List<ModelSetupInfo>();
-            var seen = new HashSet<Component>();
-
-            foreach (var target in targets)
-            {
-                if (target == null)
-                    continue;
-
-                foreach (var setup in EnumerateModelSetups(target))
-                {
-                    if (setup == null || !setup.gameObject.activeInHierarchy)
-                        continue;
-
-                    if (!seen.Add(setup))
-                        continue;
-
-                    var info = ExtractModelSetupInfo(setup);
-                    if (info.MeshRenderers != null && info.MeshRenderers.Length > 0)
-                        resolved.Add(info);
-                }
-            }
-
-            return resolved.Count == 0 ? Array.Empty<ModelSetupInfo>() : resolved.ToArray();
-        }
-
-        private static IEnumerable<Component> EnumerateModelSetups(object target)
-        {
-            if (target == null)
-                yield break;
-
-            var targetType = target.GetType();
-            if (targetType.Name == "ModelSetup")
-            {
-                yield return target as Component;
-                yield break;
-            }
-
-            if (target is IEnumerable enumerable && !(target is string))
-            {
-                foreach (var entry in enumerable)
-                {
-                    foreach (var child in EnumerateModelSetups(entry))
-                        yield return child;
-                }
-                yield break;
-            }
-
-            if (target is GameObject gameObject)
-            {
-                foreach (var comp in gameObject.GetComponentsInChildren<Component>(true))
-                {
-                    if (comp != null && comp.GetType().Name == "ModelSetup")
-                        yield return comp;
-                }
-                yield break;
-            }
-
-            if (target is Component component)
-            {
-                foreach (var comp in component.GetComponentsInChildren<Component>(true))
-                {
-                    if (comp != null && comp.GetType().Name == "ModelSetup")
-                        yield return comp;
-                }
-            }
-        }
-
-        private static ModelSetupInfo ExtractModelSetupInfo(Component modelSetup)
-        {
-            var info = new ModelSetupInfo();
-            var type = modelSetup.GetType();
-
-            var renderersField = type.GetField("meshRenderers");
-            if (renderersField != null)
-                info.MeshRenderers = renderersField.GetValue(modelSetup) as MeshRenderer[];
-
-            var colorTexField = type.GetField("colorTex");
-            if (colorTexField != null)
-                info.ColorTex = colorTexField.GetValue(modelSetup) as Texture2D;
-
-            var normalTexField = type.GetField("normalTex");
-            if (normalTexField != null)
-                info.NormalTex = normalTexField.GetValue(modelSetup) as Texture2D;
-
-            var smoothnessField = type.GetField("smoothness");
-            if (smoothnessField != null)
-                info.Smoothness = (float)smoothnessField.GetValue(modelSetup);
-
-            var useNormalsField = type.GetField("useNormals");
-            if (useNormalsField != null)
-                info.UseNormals = (bool)useNormalsField.GetValue(modelSetup);
-
-            return info;
-        }
-
-        private static Component[] ResolvePartComponents(object[] targets)
-        {   // Resolve SFS Part components from target hierarchy
-            if (targets == null || targets.Length == 0)
-                return Array.Empty<Component>();
-
-            var resolved = new List<Component>();
-            var seen = new HashSet<Component>();
-
-            foreach (var target in targets)
-            {
-                if (target == null) continue;
-
-                foreach (var part in EnumeratePartComponents(target))
-                {
-                    if (part == null || !part.gameObject.activeInHierarchy) continue;
-
-                    if (seen.Add(part))
-                        resolved.Add(part);
-                }
-            }
-
-            return resolved.Count == 0 ? Array.Empty<Component>() : resolved.ToArray();
-        }
-
-        private static IEnumerable<Component> EnumeratePartComponents(object target)
-        {   // Find Part components in GameObject hierarchy using reflection
-            if (target == null)
-                yield break;
-
-            var targetType = target.GetType();
-            if (targetType.Name == "Part" || targetType.Namespace == "SFS.Parts")
-            {
-                yield return target as Component;
-                yield break;
-            }
-
-            if (target is IEnumerable enumerable && !(target is string))
-            {
-                foreach (var entry in enumerable)
-                {
-                    foreach (var child in EnumeratePartComponents(entry))
-                        yield return child;
-                }
-                yield break;
-            }
-
-            if (target is GameObject gameObject)
-            {
-                foreach (var comp in gameObject.GetComponentsInChildren<Component>(true))
-                {
-                    if (comp == null) continue;
-
-                    var compType = comp.GetType();
-                    if (compType.Name == "Part" || compType.Namespace == "SFS.Parts")
-                        yield return comp;
-                }
-                yield break;
-            }
-
-            if (target is Component component)
-            {
-                foreach (var comp in component.GetComponentsInChildren<Component>(true))
-                {
-                    if (comp == null) continue;
-
-                    var compType = comp.GetType();
-                    if (compType.Name == "Part" || compType.Namespace == "SFS.Parts")
-                        yield return comp;
-                }
-            }
-        }
-
-        private static GameObject[] CollectRootGameObjects(object[] targets)
-        {
-            if (targets == null || targets.Length == 0)
-                return Array.Empty<GameObject>();
-
-            var roots = new HashSet<GameObject>();
-
-            foreach (var target in targets)
-            {
-                if (target == null) continue;
-
-                if (target is GameObject go) { roots.Add(go.transform.root.gameObject); continue; }
-                if (target is Component comp) { roots.Add(comp.transform.root.gameObject); continue; }
-                if (target is IEnumerable enumerable && !(target is string))
-                {
-                    foreach (var entry in enumerable)
+                    if (backup.PropertyBlocks != null)
                     {
-                        if (entry is GameObject goEntry) roots.Add(goEntry.transform.root.gameObject);
-                        else if (entry is Component compEntry) roots.Add(compEntry.transform.root.gameObject);
+                        for (int i = 0; i < backup.PropertyBlocks.Length; i++)
+                        {
+                            if (backup.PropertyBlocks[i] != null)
+                                renderer.SetPropertyBlock(backup.PropertyBlocks[i], i);
+                        }
                     }
                 }
             }
-
-            return roots.ToArray();
-        }
-
-        private struct ModelSetupInfo
-        {
-            public MeshRenderer[] MeshRenderers;
-            public Texture2D ColorTex;
-            public Texture2D NormalTex;
-            public float Smoothness;
-            public bool UseNormals;
         }
     }
 }

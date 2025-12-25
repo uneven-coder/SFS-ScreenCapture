@@ -158,21 +158,19 @@ namespace FrameEmbededState
         }
 
         static void ToggleShader(int idx)
-        {   // Toggle the shader on/off; ensure only one active at a time
+        {   // Toggle shader on/off and restore materials when disabled
             if (overlayManager == null || idx < 0 || idx >= shaders.Count)
                 return;
 
-            // If clicking the already selected shader -> disable it
             if (selectedShader == idx)
-            {
+            {   // disable and restore materials
                 selectedShader = -1;
                 var cam = GameCamerasManager.main?.world_Camera?.camera;
                 overlayManager.ConfigureOverlay(s => { s.TargetCamera = cam; s.Enable = false; });
+                Lib.Renders.ObjectTarget.Release();
             }
             else
-            {   // activate the chosen shader (this will implicitly replace any previous)
                 ApplyShader(idx, updateSelection: true);
-            }
 
             UpdateButtonHighlights();
         }

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using System.Linq;
 
 namespace FrameEmbededState
 {
@@ -100,7 +101,7 @@ namespace FrameEmbededState
         }
 
         private void Detach()
-        {
+        {   // Detach cameras and restore materials before releasing resources
             foreach (var cam in _cameras)
             {
                 if (cam == null) continue;
@@ -110,7 +111,6 @@ namespace FrameEmbededState
             }
             _cameras.Clear();
 
-            // renderer-owned resources
             Lib.Renders.RenderBehindUIRenderer.Release();
             Lib.Renders.Exclusive.Release();
             Lib.Renders.ObjectTarget.Release();
@@ -202,6 +202,12 @@ namespace FrameEmbededState
             public Renderer[] MaskIdToRenderer;
             public RendererMaterialGroup[] RendererMaterials;
             public ModelTextureData[] ModelTextures;
+
+            // --- Added for compiled/cached targets ---
+            public Renderer[] Renderers;      // unique renderers
+            public Material[] Materials;      // unique materials across all renderers
+
+            public bool MaterialsDirty;       // only set true if an effect modifies materials
         }
 
         public struct RendererMaterialGroup

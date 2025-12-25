@@ -7,7 +7,7 @@ namespace FrameEmbededState.Lib.Renders
     public static class OverlayDispatcher
     {
         public static void Render(VisualOverlayManager mgr, Camera cam, RenderTexture srcRT, RenderTexture dstRT)
-        {
+        {   // Coordinate rendering based on mode without forcing screen writes
             var settings = mgr.Settings;
             if (settings == null || cam == null)
             {
@@ -23,26 +23,25 @@ namespace FrameEmbededState.Lib.Renders
             {
                 case OverlayRenderMode.BehindUI:
                     RenderBehindUIRenderer.Render(settings, mgr.GpuMaterial, srcRT, dstRT);
-                    uiOutput = null;
                     break;
 
                 case OverlayRenderMode.Inclusive:
-                    uiOutput = Inclusive.Render(settings, mgr.GpuMaterial, srcRT, dstRT);
+                    uiOutput = Inclusive.Render(settings, mgr.GpuMaterial, srcRT, dstRT, true);
                     break;
 
                 case OverlayRenderMode.OnTop:
-                    uiOutput = Exclusive.Render(settings, mgr.GpuMaterial, srcRT);
+                    uiOutput = Exclusive.RenderUI(settings, mgr.GpuMaterial, srcRT);
                     Graphics.Blit(srcRT, dstRT);
                     break;
 
                 case OverlayRenderMode.Exclusive:
-                    uiOutput = Exclusive.Render(settings, mgr.GpuMaterial, srcRT);
+                    uiOutput = Exclusive.RenderUI(settings, mgr.GpuMaterial, srcRT);
                     Graphics.Blit(srcRT, dstRT);
                     break;
 
                 case OverlayRenderMode.ObjectLayer:
-                    ObjectTarget.Render(settings, srcRT, dstRT, settings.ObjectRenderers);
-                    uiOutput = null;
+                    ObjectTarget.Render(settings, srcRT, settings.ObjectRenderers);
+                    Graphics.Blit(srcRT, dstRT);
                     break;
             }
 

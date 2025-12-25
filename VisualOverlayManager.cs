@@ -34,8 +34,8 @@ namespace FrameEmbededState
 
         // --- Public API -------------------------------------------------------
 
-        public void VisualManager(Action<VisualOverlaySettings> configure)
-        {
+        public void ConfigureOverlay(Action<VisualOverlaySettings> configure)
+        {   // Configure and enable the overlay system
             var settings = new VisualOverlaySettings();
             configure?.Invoke(settings);
 
@@ -113,6 +113,7 @@ namespace FrameEmbededState
             // renderer-owned resources
             Lib.Renders.RenderBehindUIRenderer.Release();
             Lib.Renders.Exclusive.Release();
+            Lib.Renders.ObjectTarget.Release();
 
             UiBlurOverrideTexture = null;
             Shader.SetGlobalTexture(GlobalUiBackgroundTexId, null);
@@ -199,6 +200,23 @@ namespace FrameEmbededState
             public Dictionary<int, System.Collections.Generic.List<int>> ObjectVisiblePixels;
             public int[] MaskBuffer;
             public Renderer[] MaskIdToRenderer;
+            public RendererMaterialGroup[] RendererMaterials;
+            public ModelTextureData[] ModelTextures;
+        }
+
+        public struct RendererMaterialGroup
+        {
+            public Renderer Renderer;
+            public Material[] Materials;
+        }
+
+        public struct ModelTextureData
+        {
+            public MeshRenderer Renderer;
+            public Texture2D ColorTexture;
+            public Texture2D NormalTexture;
+            public bool UseNormals;
+            public float Smoothness;
         }
     }
 

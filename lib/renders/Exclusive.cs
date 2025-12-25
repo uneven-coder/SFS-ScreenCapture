@@ -4,19 +4,21 @@ using FrameEmbededState;
 
 namespace FrameEmbededState.Lib.Renders
 {
+    /// <summary>
+    /// UI-only renderer. Never renders to screen.
+    /// </summary>
     public static class Exclusive
     {
         private static Texture2D _srcTex;
         private static Texture2D _dstTex;
         private static NativeArray<Color32> _src;
         private static NativeArray<Color32> _dst;
-        private static int _w;
-        private static int _h;
+        private static int _w, _h;
         private static Rect _rect;
 
-        private static RenderTexture _uiOutputRT;
+        private static RenderTexture _uiRT;
 
-        public static RenderTexture Render(
+        public static RenderTexture RenderUI(
             VisualOverlayManager.VisualOverlaySettings settings,
             Material gpuMaterial,
             RenderTexture srcRT)
@@ -24,25 +26,22 @@ namespace FrameEmbededState.Lib.Renders
             if (settings == null)
                 return null;
 
+            // If nothing would render, don't allocate or compute
+            if (!settings.UseGpuShader && settings.Execute == null)
+                return null;
+
             EnsureUiRT(srcRT.width, srcRT.height);
 
-            var prevRT = RenderTexture.active;
-            RenderTexture.active = _uiOutputRT;
-            GL.Clear(true, true, Color.clear);
-            RenderTexture.active = prevRT;
+            ClearUiRT();
 
+            // GPU path
             if (settings.UseGpuShader && gpuMaterial != null)
             {
-                Graphics.Blit(srcRT, _uiOutputRT, gpuMaterial);
-                return _uiOutputRT;
+                Graphics.Blit(srcRT, _uiRT, gpuMaterial);
+                return _uiRT;
             }
 
-            if (settings.Execute == null)
-            {
-                // leave it cleared (transparent)
-                return _uiOutputRT;
-            }
-
+            // CPU path
             EnsureCpuBuffers(srcRT.width, srcRT.height);
 
             var prev = RenderTexture.active;
@@ -61,49 +60,56 @@ namespace FrameEmbededState.Lib.Renders
             });
 
             _dstTex.Apply(false, false);
-            Graphics.Blit(_dstTex, _uiOutputRT);
+            Graphics.Blit(_dstTex, _uiRT);
 
-            return _uiOutputRT;
+            return _uiRT;
         }
 
         public static void Release()
         {
-            if (_uiOutputRT != null)
+            if (_uiRT != null)
             {
-                _uiOutputRT.Release();
-                UnityEngine.Object.Destroy(_uiOutputRT);
-                _uiOutputRT = null;
+                _uiRT.Release();
+                Object.Destroy(_uiRT);
             }
 
-            if (_srcTex != null) UnityEngine.Object.Destroy(_srcTex);
-            if (_dstTex != null) UnityEngine.Object.Destroy(_dstTex);
+            if (_srcTex != null) Object.Destroy(_srcTex);
+            if (_dstTex != null) Object.Destroy(_dstTex);
+
+            _uiRT = null;
             _srcTex = null;
             _dstTex = null;
-            _w = 0;
-            _h = 0;
+            _w = _h = 0;
         }
 
         private static void EnsureUiRT(int w, int h)
         {
-            if (_uiOutputRT != null && _uiOutputRT.width == w && _uiOutputRT.height == h)
+            if (_uiRT != null && _uiRT.width == w && _uiRT.height == h)
                 return;
 
-            if (_uiOutputRT != null)
+            if (_uiRT != null)
             {
-                _uiOutputRT.Release();
-                UnityEngine.Object.Destroy(_uiOutputRT);
-                _uiOutputRT = null;
+                _uiRT.Release();
+                Object.Destroy(_uiRT);
             }
 
-            _uiOutputRT = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB)
+            _uiRT = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32)
             {
+                name = "VisualOverlay.UI",
                 useMipMap = false,
                 autoGenerateMips = false,
                 wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear,
-                name = "VisualOverlay.UiOutputRT"
+                filterMode = FilterMode.Bilinear
             };
-            _uiOutputRT.Create();
+            _uiRT.Create();
+        }
+
+        private static void ClearUiRT()
+        {
+            var prev = RenderTexture.active;
+            RenderTexture.active = _uiRT;
+            GL.Clear(true, true, Color.clear);
+            RenderTexture.active = prev;
         }
 
         private static void EnsureCpuBuffers(int w, int h)
@@ -111,24 +117,15 @@ namespace FrameEmbededState.Lib.Renders
             if (_srcTex != null && _w == w && _h == h)
                 return;
 
-            if (_srcTex != null) UnityEngine.Object.Destroy(_srcTex);
-            if (_dstTex != null) UnityEngine.Object.Destroy(_dstTex);
+            if (_srcTex != null) Object.Destroy(_srcTex);
+            if (_dstTex != null) Object.Destroy(_dstTex);
 
             _w = w;
             _h = h;
             _rect = new Rect(0, 0, w, h);
 
-            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false, false)
-            {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Point
-            };
-
-            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false, false)
-            {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Point
-            };
+            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
 
             _src = _srcTex.GetRawTextureData<Color32>();
             _dst = _dstTex.GetRawTextureData<Color32>();

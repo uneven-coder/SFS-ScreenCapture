@@ -3,13 +3,17 @@ using FrameEmbededState;
 
 namespace FrameEmbededState.Lib.Renders
 {
+    /// <summary>
+    /// Coordinates UI + screen rendering.
+    /// </summary>
     public static class Inclusive
     {
         public static RenderTexture Render(
             VisualOverlayManager.VisualOverlaySettings settings,
             Material gpuMaterial,
             RenderTexture srcRT,
-            RenderTexture dstRT)
+            RenderTexture dstRT,
+            bool renderUI)
         {
             if (settings == null)
             {
@@ -17,17 +21,14 @@ namespace FrameEmbededState.Lib.Renders
                 return null;
             }
 
-            if (gpuMaterial != null)
-                gpuMaterial.renderQueue = 3100;
+            // Screen (behind UI)
+            RenderBehindUIRenderer.Render(settings, gpuMaterial, srcRT, dstRT);
 
-            var ui = Exclusive.Render(settings, gpuMaterial, srcRT);
+            // UI overlay (optional)
+            if (!renderUI)
+                return null;
 
-            if (ui != null)
-                Graphics.Blit(ui, dstRT);
-            else
-                Graphics.Blit(srcRT, dstRT);
-
-            return ui;
+            return Exclusive.RenderUI(settings, gpuMaterial, srcRT);
         }
     }
 }

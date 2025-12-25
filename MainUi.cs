@@ -34,8 +34,8 @@ namespace FrameEmbededState
             FrameEmbededState.spaceShader.EnsureRegistered();
             FrameEmbededState.WaterShader.EnsureRegistered();
             FrameEmbededState.ChristmasCozyShader.EnsureRegistered();
-            FrameEmbededState.Moebius.EnsureRegistered(); // <-- Add Moebius shader registration
-            // FrameEmbededState.ObjectRgbCycle.EnsureRegistered();
+            FrameEmbededState.Moebius.EnsureRegistered();
+            FrameEmbededState.RgbCycleEffect.EnsureRegistered();
 
             SceneHelper.OnWorldSceneLoaded += CreateUI;
             SceneHelper.OnBuildSceneLoaded += CreateUI;
@@ -62,12 +62,11 @@ namespace FrameEmbededState
 
             shaderButtons = new System.Collections.Generic.List<(GameObject, Color)>();
 
-            // Always use the current world camera for overlay
             if (overlayManager != null)
             {
                 var cam = GameCamerasManager.main?.world_Camera?.camera;
                 if (cam != null)
-                    overlayManager.VisualManager(s => { s.TargetCamera = cam; s.Enable = false; });
+                    overlayManager.ConfigureOverlay(s => { s.TargetCamera = cam; s.Enable = false; });
             }
 
             Debug.Log($"[FrameEmbededState] Creating Shader Selector UI with {shaders.Count} shaders loaded.");
@@ -147,9 +146,8 @@ namespace FrameEmbededState
             if (updateSelection)
                 selectedShader = idx;
 
-            // Always use the current world camera for overlay
             var cam = GameCamerasManager.main?.world_Camera?.camera;
-            overlayManager.VisualManager(settings =>
+            overlayManager.ConfigureOverlay(settings =>
             {   // bind to camera if available and enable this effect
                 settings.TargetCamera = cam;
                 settings.Enable = true;
@@ -169,7 +167,7 @@ namespace FrameEmbededState
             {
                 selectedShader = -1;
                 var cam = GameCamerasManager.main?.world_Camera?.camera;
-                overlayManager.VisualManager(s => { s.TargetCamera = cam; s.Enable = false; });
+                overlayManager.ConfigureOverlay(s => { s.TargetCamera = cam; s.Enable = false; });
             }
             else
             {   // activate the chosen shader (this will implicitly replace any previous)

@@ -49,7 +49,7 @@ namespace FrameEmbededState
             {   // Set overlay to current world camera
                 var cam = GameCamerasManager.main?.world_Camera?.camera;
                 if (cam == null) return;
-                overlay.VisualManager(settings =>
+                overlay.ConfigureOverlay(settings =>
                 {
                     settings.TargetCamera = cam;
                     settings.Enable = false;

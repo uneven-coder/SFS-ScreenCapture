@@ -9,13 +9,12 @@ namespace FrameEmbededState.Lib
         private static bool _applied;
 
         public static void ApplyAll()
-        {   // Apply all Harmony patches for FrameEmbededState
+        {
             if (_applied)
                 return;
 
             var harmony = new Harmony("FrameEmbededState.AllPatches");
 
-            // Overlay sorting and UI blur patches
             OverlaySortingPatches.Apply(harmony);
 
             _applied = true;
@@ -82,6 +81,47 @@ namespace FrameEmbededState.Lib
             }
 
             return true;
+        }
+    }
+
+    internal static class SfsPartShaderPatches
+    {
+        private static readonly int ColorTexId = Shader.PropertyToID("_ColorTex");
+        private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
+        private static readonly int ColorMultId = Shader.PropertyToID("_ColorMult");
+        
+        public static void Apply(Harmony harmony)
+        {
+            var materialType = typeof(Material);
+            
+            var setTexture = AccessTools.Method(materialType, nameof(Material.SetTexture), new[] { typeof(int), typeof(Texture) });
+            if (setTexture != null)
+                harmony.Patch(setTexture, postfix: new HarmonyMethod(typeof(SfsPartShaderPatches), nameof(Material_SetTexture_Postfix)));
+
+            var getTexture = AccessTools.Method(materialType, nameof(Material.GetTexture), new[] { typeof(int) });
+            if (getTexture != null)
+                harmony.Patch(getTexture, postfix: new HarmonyMethod(typeof(SfsPartShaderPatches), nameof(Material_GetTexture_Postfix)));
+        }
+
+        public static void Material_SetTexture_Postfix(Material __instance, int nameID, Texture value)
+        {
+            if (__instance == null || __instance.shader == null || __instance.shader.name != "SFS/Part")
+                return;
+
+            if (nameID == ColorTexId || nameID == MainTexId)
+            {
+                if (__instance.HasProperty(ColorMultId))
+                    __instance.SetVector(ColorMultId, Vector4.one);
+            }
+        }
+
+        public static void Material_GetTexture_Postfix(Material __instance, int nameID, ref Texture __result)
+        {
+            if (__instance == null || __instance.shader == null || __instance.shader.name != "SFS/Part")
+                return;
+
+            if ((nameID == ColorTexId || nameID == MainTexId) && __result == null)
+                __result = Texture2D.whiteTexture;
         }
     }
 }

@@ -24,7 +24,7 @@ namespace FrameEmbededState
                 {
                     settings.Enable = true;
                     settings.Execute = MoebiusExecute;
-                    settings.RenderMode = OverlayRenderMode.Inclusive;
+                    settings.RenderMode = OverlayRenderMode.BehindUI;
                 }
             );
             _registered = true;

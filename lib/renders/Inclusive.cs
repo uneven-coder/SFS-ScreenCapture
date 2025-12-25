@@ -5,26 +5,29 @@ namespace FrameEmbededState.Lib.Renders
 {
     public static class Inclusive
     {
-        public static void Render(VisualOverlayManager.State s, RenderTexture srcRT, RenderTexture dstRT)
-        {   // Render overlay inclusive (processed output for both camera and UI)
-            var settings = s.Settings;
+        public static RenderTexture Render(
+            VisualOverlayManager.VisualOverlaySettings settings,
+            Material gpuMaterial,
+            RenderTexture srcRT,
+            RenderTexture dstRT)
+        {
+            if (settings == null)
+            {
+                Graphics.Blit(srcRT, dstRT);
+                return null;
+            }
 
-            if (s.GpuMaterial != null)
-                s.GpuMaterial.renderQueue = TryGetRenderQueue("UIOverlayInclusive", 3100);
+            if (gpuMaterial != null)
+                gpuMaterial.renderQueue = 3100;
 
-            // produce the UI output (Exclusive path produces s.UiOutputRT)
-            Exclusive.Render(s, srcRT);
+            var ui = Exclusive.Render(settings, gpuMaterial, srcRT);
 
-            Graphics.Blit(s.UiOutputRT, dstRT);
-        }
+            if (ui != null)
+                Graphics.Blit(ui, dstRT);
+            else
+                Graphics.Blit(srcRT, dstRT);
 
-        private static int TryGetRenderQueue(string layer, int fallback)
-        {   // Call VisualOverlayManager.TryGetRenderQueue via reflection
-            var method = typeof(FrameEmbededState.VisualOverlayManager)
-                .GetMethod("TryGetRenderQueue", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-            if (method != null)
-                return (int)method.Invoke(null, new object[] { layer, fallback });
-            return fallback;
+            return ui;
         }
     }
 }

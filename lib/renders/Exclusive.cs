@@ -23,15 +23,21 @@ namespace FrameEmbededState.Lib.Renders
             Material gpuMaterial,
             RenderTexture srcRT)
         {
-            if (settings == null)
+            if (settings == null || srcRT == null)
                 return null;
 
             // If nothing would render, don't allocate or compute
             if (!settings.UseGpuShader && settings.Execute == null)
                 return null;
 
-            EnsureUiRT(srcRT.width, srcRT.height);
+            // If GPU requested but material missing AND no CPU fallback, do nothing
+            if (settings.UseGpuShader && gpuMaterial == null && settings.Execute == null)
+                return null;
 
+            int w = srcRT.width;
+            int h = srcRT.height;
+
+            EnsureUiRT(w, h);
             ClearUiRT();
 
             // GPU path
@@ -41,13 +47,22 @@ namespace FrameEmbededState.Lib.Renders
                 return _uiRT;
             }
 
-            // CPU path
-            EnsureCpuBuffers(srcRT.width, srcRT.height);
+            // CPU path (requires Execute)
+            if (settings.Execute == null)
+                return null;
+
+            EnsureCpuBuffers(w, h);
 
             var prev = RenderTexture.active;
-            RenderTexture.active = srcRT;
-            _srcTex.ReadPixels(_rect, 0, 0, false);
-            RenderTexture.active = prev;
+            try
+            {
+                RenderTexture.active = srcRT;
+                _srcTex.ReadPixels(_rect, 0, 0, false);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
 
             CopyNative(_src, _dst);
 
@@ -79,7 +94,10 @@ namespace FrameEmbededState.Lib.Renders
             _uiRT = null;
             _srcTex = null;
             _dstTex = null;
+            _src = default;
+            _dst = default;
             _w = _h = 0;
+            _rect = default;
         }
 
         private static void EnsureUiRT(int w, int h)
@@ -107,9 +125,15 @@ namespace FrameEmbededState.Lib.Renders
         private static void ClearUiRT()
         {
             var prev = RenderTexture.active;
-            RenderTexture.active = _uiRT;
-            GL.Clear(true, true, Color.clear);
-            RenderTexture.active = prev;
+            try
+            {
+                RenderTexture.active = _uiRT;
+                GL.Clear(true, true, Color.clear);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+            }
         }
 
         private static void EnsureCpuBuffers(int w, int h)
@@ -124,8 +148,17 @@ namespace FrameEmbededState.Lib.Renders
             _h = h;
             _rect = new Rect(0, 0, w, h);
 
-            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
-            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false)
+            {
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
+
+            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false)
+            {
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear
+            };
 
             _src = _srcTex.GetRawTextureData<Color32>();
             _dst = _dstTex.GetRawTextureData<Color32>();
@@ -134,8 +167,16 @@ namespace FrameEmbededState.Lib.Renders
         private static void CopyNative(NativeArray<Color32> from, NativeArray<Color32> to)
         {
             int n = Mathf.Min(from.Length, to.Length);
+            if (n <= 0)
+                return;
+
+#if UNITY_2018_1_OR_NEWER
+            // Uses Unity's internal memcopy (faster than element-by-element)
+            NativeArray<Color32>.Copy(from, 0, to, 0, n);
+#else
             for (int i = 0; i < n; i++)
                 to[i] = from[i];
+#endif
         }
     }
 }

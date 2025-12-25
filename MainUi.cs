@@ -32,6 +32,8 @@ namespace FrameEmbededState
             FrameEmbededState.oldFilter.EnsureRegistered();
             FrameEmbededState.FrameWatermarkEncoder.EnsureRegistered();
             FrameEmbededState.spaceShader.EnsureRegistered();
+            FrameEmbededState.galaxyShader.EnsureRegistered();
+            FrameEmbededState.BlackHoleShader.EnsureRegistered();
             FrameEmbededState.WaterShader.EnsureRegistered();
             FrameEmbededState.ChristmasCozyShader.EnsureRegistered();
             FrameEmbededState.Moebius.EnsureRegistered();

@@ -3,29 +3,21 @@ using UnityEngine;
 
 namespace FrameEmbededState
 {
-    public static class WaterShader
+    public class WaterShader : BaseShaderEffect
     {
-        static bool _registered = false;
         static Vector2 _lastUiPos = Vector2.zero;
         static float _splashTime = 0f;
         static float _splashStrength = 0f;
 
-        public static void EnsureRegistered()
-        {
-            if (_registered) return;
+        static WaterShader _instance = new WaterShader(); // auto-register
 
-            MainUi.RegisterShader(
-                "WaterUI",
-                "Water ripple effect that moves with UI (Exclusive mode)",
-                settings =>
-                {
-                    settings.Enable = true;
-                    settings.RenderMode = OverlayRenderMode.Exclusive;
-                    settings.Execute = WaterUIExecute;
-                }
-            );
+        public WaterShader() : base("WaterUI", "Water ripple effect that moves with UI (Exclusive mode)") { }
 
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register water shader
+            settings.Enable = true;
+            settings.RenderMode = OverlayRenderMode.Exclusive;
+            settings.Execute = WaterUIExecute;
         }
 
         static void WaterUIExecute(VisualOverlayManager.FrameData frame)

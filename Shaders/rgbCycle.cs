@@ -6,100 +6,92 @@ using SFS.World;
 
 namespace FrameEmbededState
 {
-    public class RgbCycleEffect
+    public class RgbCycleEffect : BaseShaderEffect
     {
-        static bool _registered;
         static Color32[] _hueLut; // 256 colors
         static readonly int ColorTextureId = Shader.PropertyToID("_ColorTexture");
 
-        public static void EnsureRegistered()
-        {   // Register the RGB cycle effect, supporting both pixel and SFS/Part material color cycling
+        static RgbCycleEffect _instance = new RgbCycleEffect(); // auto-register
 
-            if (_registered) return;
+        public RgbCycleEffect() : base("RGB Cycle", "RGB cycle as a pixel effect and SFS/Part color cycler.") { }
 
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register the RGB cycle effect, supporting both pixel and SFS/Part color cycling
             BuildHueLut();
 
-            MainUi.RegisterShader(
-                "RGB Cycle",
-                "RGB cycle as a pixel effect and SFS/Part color cycler.",
-                settings =>
+            settings.RenderMode = OverlayRenderMode.ObjectLayer;
+
+            var playerRocket = GameObject.FindObjectsOfType<Rocket>()
+                .FirstOrDefault(r => r != null && r.isPlayer);
+
+            settings.ObjectRenderers = playerRocket
+                ? playerRocket.GetComponentsInChildren<Renderer>(true)
+                    .Where(r => r != null && r.enabled && r.gameObject.activeInHierarchy)
+                    .ToArray()
+                : null;
+
+            settings.Execute = frame =>
+            {   // Apply pixel effect and SFS/Part color cycling
+
+                int w = frame.Width;
+                int h = frame.Height;
+                var src = frame.Source;
+                var dst = frame.Result;
+
+                int baseOffset = (int)(Time.time * 64f) & 255;
+                int xStep = 1;
+                int yStep = 3;
+
+                // Pixel effect for all
+                for (int y = 0; y < h; y++)
                 {
-                    settings.RenderMode = OverlayRenderMode.ObjectLayer;
+                    int row = y * w;
+                    int rowHue = (baseOffset + y * yStep) & 255;
 
-                    var playerRocket = GameObject.FindObjectsOfType<Rocket>()
-                        .FirstOrDefault(r => r != null && r.isPlayer);
+                    for (int x = 0; x < w; x++)
+                    {
+                        int i = row + x;
+                        Color32 c = _hueLut[(rowHue + x * xStep) & 255];
+                        c.a = src[i].a;
+                        dst[i] = c;
+                    }
+                }
 
-                    settings.ObjectRenderers = playerRocket
-                        ? playerRocket.GetComponentsInChildren<Renderer>(true)
-                            .Where(r => r != null && r.enabled && r.gameObject.activeInHierarchy)
-                            .ToArray()
-                        : null;
+                // SFS/Part color cycling (material property block)
+                var groups = frame.RendererMaterials;
+                if (groups != null && groups.Length > 0)
+                {
+                    for (int i = 0; i < groups.Length; i++)
+                    {
+                        var group = groups[i];
+                        if (group.Renderer == null || group.Materials == null || group.Materials.Length == 0)
+                            continue;
 
-                    settings.Execute = frame =>
-                    {   // Apply pixel effect and SFS/Part color cycling
-
-                        int w = frame.Width;
-                        int h = frame.Height;
-                        var src = frame.Source;
-                        var dst = frame.Result;
-
-                        int baseOffset = (int)(Time.time * 64f) & 255;
-                        int xStep = 1;
-                        int yStep = 3;
-
-                        // Pixel effect for all
-                        for (int y = 0; y < h; y++)
+                        var mat = group.Materials[0];
+                        if (mat != null && mat.shader != null && mat.shader.name == "SFS/Part")
                         {
-                            int row = y * w;
-                            int rowHue = (baseOffset + y * yStep) & 255;
+                            float hue = Mathf.Repeat((baseOffset / 256f) + i * 0.1f, 1f);
+                            Color cycled = Color.HSVToRGB(hue, 1f, 1f);
+                            var color32 = new Color32(
+                                (byte)(cycled.r * 255),
+                                (byte)(cycled.g * 255),
+                                (byte)(cycled.b * 255),
+                                255);
 
-                            for (int x = 0; x < w; x++)
+                            var tintTex = GetOrCreateColorTexture(color32);
+
+                            var mpb = new MaterialPropertyBlock();
+                            int submeshCount = group.Materials.Length;
+                            for (int submeshIndex = 0; submeshIndex < submeshCount; submeshIndex++)
                             {
-                                int i = row + x;
-                                Color32 c = _hueLut[(rowHue + x * xStep) & 255];
-                                c.a = src[i].a;
-                                dst[i] = c;
+                                group.Renderer.GetPropertyBlock(mpb, submeshIndex);
+                                mpb.SetTexture(ColorTextureId, tintTex);
+                                group.Renderer.SetPropertyBlock(mpb, submeshIndex);
                             }
                         }
-
-                        // SFS/Part color cycling (material property block)
-                        var groups = frame.RendererMaterials;
-                        if (groups != null && groups.Length > 0)
-                        {
-                            for (int i = 0; i < groups.Length; i++)
-                            {
-                                var group = groups[i];
-                                if (group.Renderer == null || group.Materials == null || group.Materials.Length == 0)
-                                    continue;
-
-                                var mat = group.Materials[0];
-                                if (mat != null && mat.shader != null && mat.shader.name == "SFS/Part")
-                                {
-                                    float hue = Mathf.Repeat((baseOffset / 256f) + i * 0.1f, 1f);
-                                    Color cycled = Color.HSVToRGB(hue, 1f, 1f);
-                                    var color32 = new Color32(
-                                        (byte)(cycled.r * 255),
-                                        (byte)(cycled.g * 255),
-                                        (byte)(cycled.b * 255),
-                                        255);
-
-                                    var tintTex = GetOrCreateColorTexture(color32);
-
-                                    var mpb = new MaterialPropertyBlock();
-                                    int submeshCount = group.Materials.Length;
-                                    for (int submeshIndex = 0; submeshIndex < submeshCount; submeshIndex++)
-                                    {
-                                        group.Renderer.GetPropertyBlock(mpb, submeshIndex);
-                                        mpb.SetTexture(ColorTextureId, tintTex);
-                                        group.Renderer.SetPropertyBlock(mpb, submeshIndex);
-                                    }
-                                }
-                            }
-                        }
-                    };
-                });
-
-            _registered = true;
+                    }
+                }
+            };
         }
 
         static void BuildHueLut()

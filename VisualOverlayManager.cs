@@ -33,10 +33,10 @@ namespace FrameEmbededState
         private string _lastShaderSource;
         private bool _lastUseGpuShader;
 
-        // --- Public API -------------------------------------------------------
+        
 
         public void ConfigureOverlay(Action<VisualOverlaySettings> configure)
-        {   // Configure and enable the overlay system
+        {   
             var settings = new VisualOverlaySettings();
             configure?.Invoke(settings);
 
@@ -78,7 +78,7 @@ namespace FrameEmbededState
             _uiTargets.Remove(image);
         }
 
-        // --- Attach / Detach --------------------------------------------------
+        
 
         private void AttachToCameras(IEnumerable<Camera> cams)
         {
@@ -101,7 +101,7 @@ namespace FrameEmbededState
         }
 
         private void Detach()
-        {   // Detach cameras and restore materials before releasing resources
+        {   
             foreach (var cam in _cameras)
             {
                 if (cam == null) continue;
@@ -128,7 +128,7 @@ namespace FrameEmbededState
             _lastUseGpuShader = false;
         }
 
-        // --- Shader / material ------------------------------------------------
+        
 
         private void EnsureGpuMaterial(VisualOverlaySettings settings)
         {
@@ -171,7 +171,7 @@ namespace FrameEmbededState
             }
         }
 
-        // --- Settings / data --------------------------------------------------
+        
 
         public sealed class VisualOverlaySettings
         {
@@ -203,11 +203,13 @@ namespace FrameEmbededState
             public RendererMaterialGroup[] RendererMaterials;
             public ModelTextureData[] ModelTextures;
 
-            // --- Added for compiled/cached targets ---
-            public Renderer[] Renderers;      // unique renderers
-            public Material[] Materials;      // unique materials across all renderers
+            
+            public Renderer[] Renderers;      
+            public Material[] Materials;      
 
-            public bool MaterialsDirty;       // only set true if an effect modifies materials
+            public bool MaterialsDirty;       
+
+            public UnityEngine.Vector2[] CorrectedUvBuffer;
         }
 
         public struct RendererMaterialGroup

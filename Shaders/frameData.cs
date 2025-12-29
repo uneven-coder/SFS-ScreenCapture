@@ -13,7 +13,7 @@ namespace FrameEmbededState
     /// Encodes a text payload into the current frame using the same tile/packet layout as the Python reference.
     /// Works by copying frame.Source -> frame.Result, then watermarking frame.Result in-place.
     /// </summary>
-    public static class FrameWatermarkEncoder
+    public class FrameWatermarkEncoder : BaseShaderEffect
     {
         // Matches Python defaults (bs=8, s=8.0, channel=-1).  :contentReference[oaicite:4]{index=4}
         const int BS = 8;
@@ -25,20 +25,18 @@ namespace FrameEmbededState
 
         static readonly State _state = new State();
 
-        public static void EnsureRegistered()
+        static FrameWatermarkEncoder _instance = new FrameWatermarkEncoder(); // auto-register
+
+        public FrameWatermarkEncoder() : base("FrameWatermarkEncoder", "Encodes gameplay text into the frame (DCT watermark).") { }
+
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
         {   // Register the watermark encoder overlay with OnTop mode
             if (_state.Registered)
                 return;
 
-            MainUi.RegisterShader(
-                "FrameWatermarkEncoder",
-                "Encodes gameplay text into the frame (DCT watermark).",
-                settings =>
-                {   settings.Enable = true;
-                    settings.Execute = Execute;
-                    settings.RenderMode = OverlayRenderMode.OnTop;
-                }
-            );
+            settings.Enable = true;
+            settings.Execute = Execute;
+            settings.RenderMode = OverlayRenderMode.OnTop;
 
             _state.Registered = true;
         }

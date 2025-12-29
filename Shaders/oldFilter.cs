@@ -5,7 +5,7 @@ using FrameEmbededState; // Needed for OverlayRenderMode
 
 namespace FrameEmbededState
 {
-    public class oldFilter
+    public class oldFilter : BaseShaderEffect
     {
         // Film look tuning
         const float Contrast     = 1.25f;   // >1 = punchier
@@ -20,23 +20,15 @@ namespace FrameEmbededState
         const float ScratchAmt   = 0.22f;   // 0..0.5
         const int   ScratchWidth = 1;       // px
 
-        static bool _registered = false;
+        static oldFilter _instance = new oldFilter(); // auto-register
 
-        public static void EnsureRegistered()
-        {
-            if (_registered) return;
+        public oldFilter() : base("FilmLook", "Cinematic film look with grain, vignette and scratches.") { }
 
-            MainUi.RegisterShader(
-                "FilmLook",
-                "Cinematic film look with grain, vignette and scratches.",
-                settings =>
-                {   settings.Enable = true;
-                    settings.Execute = FilmExecute;
-                    settings.RenderMode = OverlayRenderMode.Inclusive;
-                }
-            );
-
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register the film look effect
+            settings.Enable = true;
+            settings.Execute = FilmExecute;
+            settings.RenderMode = OverlayRenderMode.Inclusive;
         }
 
         static void FilmExecute(VisualOverlayManager.FrameData frame)

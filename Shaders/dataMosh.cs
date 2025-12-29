@@ -3,11 +3,13 @@ using FrameEmbededState.Lib;  // <-- added to use MathUtil
 
 namespace FrameEmbededState
 {
-    public class dataMosh
+    public class dataMosh : BaseShaderEffect
     {
         static Color32[] _prev; // previous "P-frame"
         static Color32[] _mosh; // intermediate
         static int _frameIndex;
+
+        static dataMosh _instance = new dataMosh(); // auto-register
 
         // Datamosh tuning
         const int   KeyframeInterval  = 90;   // reset every N frames (simulates I-frames)
@@ -19,24 +21,13 @@ namespace FrameEmbededState
         const int   ChromaShiftMax    = 3;    // px RGB misalignment
         const float OccasionalFreeze  = 0.10f;// chance to hold prev entirely for a frame
 
-        // Explicit static initialization method to ensure registration
-        public static void EnsureRegistered()
-        {   // Register datamosh shader with UI if not already registered
-            if (_registered)
-                return;
+        public dataMosh() : base("Datamosh", "Simulates video compression artifacts and smearing.") { }
 
-            MainUi.RegisterShader(
-                "Datamosh",
-                "Simulates video compression artifacts and smearing.",
-                settings =>
-                {
-                    settings.Enable = true;
-                    settings.Execute = DatamoshExecute;
-                }
-            );
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register datamosh shader with UI if not already registered
+            settings.Enable = true;
+            settings.Execute = DatamoshExecute;
         }
-        static bool _registered = false;
 
         public static void DatamoshExecute(VisualOverlayManager.FrameData frame)
         {   // Datamosh effect implementation for overlay

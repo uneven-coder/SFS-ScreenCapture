@@ -11,6 +11,17 @@ namespace FrameEmbededState
 {
     public delegate void ShaderEffectDelegate(VisualOverlayManager.VisualOverlaySettings settings);
 
+    // Base class for auto-registering shader effects
+    public abstract class BaseShaderEffect
+    {   // Automatically registers shader effect on instantiation
+        protected BaseShaderEffect(string name, string description)
+        {
+            MainUi.RegisterShader(name, description, ApplyEffect);
+        }
+
+        protected abstract void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings);
+    }
+
     public static class MainUi
     {
         static readonly List<(string name, string description, ShaderEffectDelegate effect)> shaders = new List<(string, string, ShaderEffectDelegate)>();
@@ -28,21 +39,22 @@ namespace FrameEmbededState
         public static void Init()
         {   // Attach/detach UI on scene load/unload
 
-            FrameEmbededState.dataMosh.EnsureRegistered();
-            FrameEmbededState.oldFilter.EnsureRegistered();
-            FrameEmbededState.FrameWatermarkEncoder.EnsureRegistered();
-            FrameEmbededState.spaceShader.EnsureRegistered();
-            FrameEmbededState.galaxyShader.EnsureRegistered();
-            FrameEmbededState.BlackHoleShader.EnsureRegistered();
-            FrameEmbededState.WaterShader.EnsureRegistered();
-            FrameEmbededState.ChristmasCozyShader.EnsureRegistered();
-            FrameEmbededState.Moebius.EnsureRegistered();
-            FrameEmbededState.RgbCycleEffect.EnsureRegistered();
+            // Ensure all shader effect types are loaded so their static constructors run and auto-register
+            ForceLoadAllShaderEffects();
 
             SceneHelper.OnWorldSceneLoaded += CreateUI;
             SceneHelper.OnBuildSceneLoaded += CreateUI;
             SceneHelper.OnWorldSceneUnloaded += DestroyUI;
             SceneHelper.OnBuildSceneUnloaded += DestroyUI;
+        }
+
+        static void ForceLoadAllShaderEffects()
+        {   // Force-load all types derived from BaseShaderEffect to ensure static registration
+            var baseType = typeof(BaseShaderEffect);
+            var asm = baseType.Assembly;
+            foreach (var t in asm.GetTypes())
+                if (t.IsClass && !t.IsAbstract && baseType.IsAssignableFrom(t))
+                    System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(t.TypeHandle);
         }
 
         public static void RegisterShader(string name, string description, ShaderEffectDelegate effect)

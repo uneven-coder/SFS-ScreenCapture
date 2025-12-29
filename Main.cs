@@ -47,7 +47,8 @@ namespace FrameEmbededState
             // Always use the current world camera for overlay
             void SetOverlayToCurrentCamera()
             {   // Set overlay to current world camera
-                var cam = GameCamerasManager.main?.world_Camera?.camera;
+                // var cam = GameCamerasManager.main?.world_Camera?.camera;
+                var cam = GameCamerasManager.main?.scaledWorld_Camera?.camera;
                 if (cam == null) return;
                 overlay.ConfigureOverlay(settings =>
                 {

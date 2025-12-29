@@ -3,31 +3,22 @@ using FrameEmbededState.Lib;
 
 namespace FrameEmbededState
 {
-    public class Moebius
+    public class Moebius : BaseShaderEffect
     {
         // Tuning parameters for Moebius comic effect
         const float PosterizeLevels = 7f;      // Number of color bands
         const float EdgeStrength   = 0.38f;    // Edge enhancement
         const float SaturationBoost = 1.35f;   // Increase color intensity
 
-        static bool _registered = false;
+        static Moebius _instance = new Moebius(); // auto-register
 
-        public static void EnsureRegistered()
-        {   // Register Moebius shader with UI if not already registered
-            if (_registered)
-                return;
+        public Moebius() : base("Moebius", "Surreal comic effect with posterized colors and edge lines.") { }
 
-            MainUi.RegisterShader(
-                "Moebius",
-                "Surreal comic effect with posterized colors and edge lines.",
-                settings =>
-                {
-                    settings.Enable = true;
-                    settings.Execute = MoebiusExecute;
-                    settings.RenderMode = OverlayRenderMode.BehindUI;
-                }
-            );
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register Moebius shader with UI
+            settings.Enable = true;
+            settings.Execute = MoebiusExecute;
+            settings.RenderMode = OverlayRenderMode.BehindUI;
         }
 
         static void MoebiusExecute(VisualOverlayManager.FrameData frame)

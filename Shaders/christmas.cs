@@ -3,26 +3,20 @@ using UnityEngine;
 
 namespace FrameEmbededState
 {
-    public static class ChristmasCozyShader
+    public class ChristmasCozyShader : BaseShaderEffect
     {
-        static bool _registered = false;
+        static ChristmasCozyShader _instance = new ChristmasCozyShader(); // auto-register
 
-        public static void EnsureRegistered()
-        {
-            if (_registered) return;
+        public ChristmasCozyShader() : base(
+            "Christmas Cozy",
+            "Night sky, snowfall, garland lights, and festive elements (Exclusive UI)"
+        ) { }
 
-            MainUi.RegisterShader(
-                "Christmas Cozy",
-                "Night sky, snowfall, garland lights, and festive elements (Exclusive UI)",
-                settings =>
-                {
-                    settings.Enable = true;
-                    settings.RenderMode = OverlayRenderMode.Exclusive;
-                    settings.Execute = ChristmasCozyExecute;
-                }
-            );
-
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register Christmas Cozy shader
+            settings.Enable = true;
+            settings.RenderMode = OverlayRenderMode.Exclusive;
+            settings.Execute = ChristmasCozyExecute;
         }
 
         // --- Helpers ---------------------------------------------------------

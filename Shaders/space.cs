@@ -3,26 +3,17 @@ using UnityEngine;
 
 namespace FrameEmbededState
 {
-    public static class spaceShader
+    public class spaceShader : BaseShaderEffect
     {
-        static bool _registered = false;
+        static spaceShader _instance = new spaceShader(); // auto-register
 
-        public static void EnsureRegistered()
-        {
-            if (_registered) return;
+        public spaceShader() : base("Swirlspace", "Swirling starfield that follows UI position (Exclusive mode)") { }
 
-            MainUi.RegisterShader(
-                "Swirlspace",
-                "Swirling starfield that follows UI position (Exclusive mode)",
-                settings =>
-                {
-                    settings.Enable = true;
-                    settings.RenderMode = OverlayRenderMode.Exclusive;
-                    settings.Execute = SwirlspaceExecute;
-                }
-            );
-
-            _registered = true;
+        protected override void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings)
+        {   // Register swirlspace shader
+            settings.Enable = true;
+            settings.RenderMode = OverlayRenderMode.Exclusive;
+            settings.Execute = SwirlspaceExecute;
         }
 
         static void SwirlspaceExecute(VisualOverlayManager.FrameData frame)

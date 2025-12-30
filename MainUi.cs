@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
+using UnityEngine.UI;
 using SFS.UI.ModGUI;
 using UITools;
 using ModLoader.Helpers;
-using UnityEngine.UI;
-using SFS.World;  // add to lookup game cameras
+using SFS.World;
 
 namespace FrameEmbededState
 {
@@ -13,7 +14,7 @@ namespace FrameEmbededState
 
     // Base class for auto-registering shader effects
     public abstract class BaseShaderEffect
-    {   // Automatically registers shader effect on instantiation
+    {
         protected BaseShaderEffect(string name, string description)
         {
             MainUi.RegisterShader(name, description, ApplyEffect);
@@ -24,22 +25,47 @@ namespace FrameEmbededState
 
     public static class MainUi
     {
-        static readonly List<(string name, string description, ShaderEffectDelegate effect)> shaders = new List<(string, string, ShaderEffectDelegate)>();
-        static VisualOverlayManager overlayManager;
-        static GameObject holder;
-        static ClosableWindow window;
-        static readonly int windowID = Builder.GetRandomID();
+        private struct ShaderInfo
+        {
+            public readonly string Name;
+            public readonly string Description;
+            public readonly ShaderEffectDelegate Effect;
 
-        static int selectedShader = -1; // Track currently selected shader
-        // store button object + its original (normal) color so we can restore it
-        static System.Collections.Generic.List<(GameObject obj, Color normalColor)> shaderButtons = new System.Collections.Generic.List<(GameObject, Color)>();
-        // tint to add on top of the normal color when highlighted
-        static readonly Color HighlightAdd = new Color(0.2f, 0.2f, 0.45f, 0f);
+            public ShaderInfo(string name, string description, ShaderEffectDelegate effect)
+            {
+                Name = name;
+                Description = description;
+                Effect = effect;
+            }
+        }
+
+        private struct ButtonTint
+        {
+            public readonly Graphic Graphic;
+            public readonly Color Normal;
+
+            public ButtonTint(Graphic graphic, Color normal)
+            {
+                Graphic = graphic;
+                Normal = normal;
+            }
+        }
+
+        private static readonly List<ShaderInfo> shaders = new();
+        private static readonly List<ButtonTint> buttonTints = new();
+
+        private static VisualOverlayManager overlayManager;
+        private static GameObject holder;
+        private static ClosableWindow window;
+
+        private static readonly int windowID = Builder.GetRandomID();
+        private static int selectedShader = -1;
+
+        // tint to add to the original color for selected button
+        private static readonly Color HighlightAdd = new(0.2f, 0.2f, 0.45f, 0f);
 
         public static void Init()
-        {   // Attach/detach UI on scene load/unload
-
-            // Ensure all shader effect types are loaded so their static constructors run and auto-register
+        {
             ForceLoadAllShaderEffects();
 
             SceneHelper.OnWorldSceneLoaded += CreateUI;
@@ -48,52 +74,68 @@ namespace FrameEmbededState
             SceneHelper.OnBuildSceneUnloaded += DestroyUI;
         }
 
-        static void ForceLoadAllShaderEffects()
-        {   // Force-load all types derived from BaseShaderEffect to ensure static registration
-            var baseType = typeof(BaseShaderEffect);
-            var asm = baseType.Assembly;
-            foreach (var t in asm.GetTypes())
-                if (t.IsClass && !t.IsAbstract && baseType.IsAssignableFrom(t))
-                    System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(t.TypeHandle);
-        }
+        public static void SetOverlayManager(VisualOverlayManager mgr) => overlayManager = mgr;
 
         public static void RegisterShader(string name, string description, ShaderEffectDelegate effect)
-        {   // Register a shader effect for UI selection and log registration
-            shaders.Add((name, description, effect));
+        {
+            shaders.Add(new ShaderInfo(name, description, effect));
             Debug.Log($"[FrameEmbededState] Registered shader: {name} - {description}");
-            if (window != null)
-                CreateUI();
+
+            // Rebuild if the window already exists
+            if (window != null) CreateUI();
         }
 
-        public static void SetOverlayManager(VisualOverlayManager mgr)
-        {   // Set the overlay manager instance
-            overlayManager = mgr;
+        private static void ForceLoadAllShaderEffects()
+        {
+            var baseType = typeof(BaseShaderEffect);
+            foreach (var t in baseType.Assembly.GetTypes())
+            {
+                if (t.IsClass && !t.IsAbstract && baseType.IsAssignableFrom(t))
+                    RuntimeHelpers.RunClassConstructor(t.TypeHandle);
+            }
+        }
+
+        private static Camera GetWorldCamera() => GameCamerasManager.main?.world_Camera?.camera;
+
+        private static void SetOverlayEnabled(bool enable)
+        {
+            if (overlayManager == null) return;
+            var cam = GetWorldCamera();
+            overlayManager.ConfigureOverlay(s =>
+            {
+                s.TargetCamera = cam;
+                s.Enable = enable;
+            });
         }
 
         public static void CreateUI()
-        {   // Create the shader selector window and ensure buttons are visible
+        {
             DestroyUI();
 
-            shaderButtons = new System.Collections.Generic.List<(GameObject, Color)>();
+            buttonTints.Clear();
 
-            if (overlayManager != null)
-            {
-                var cam = GameCamerasManager.main?.world_Camera?.camera;
-                if (cam != null)
-                    overlayManager.ConfigureOverlay(s => { s.TargetCamera = cam; s.Enable = false; });
-            }
+            // Ensure overlay is bound to the current camera and disabled by default
+            SetOverlayEnabled(false);
 
-            Debug.Log($"[FrameEmbededState] Creating Shader Selector UI with {shaders.Count} shaders loaded.");
-            for (int i = 0; i < shaders.Count; i++)
-                Debug.Log($"[FrameEmbededState] Shader {i}: {shaders[i].name} - {shaders[i].description}");
+            int width = 340;
+            int height = 70 + shaders.Count * 44;
 
-            int width = 340, height = 70 + shaders.Count * 44;
             holder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "Shader Selector Holder");
-            window = UIToolsBuilder.CreateClosableWindow(holder.transform, windowID, width, height, 0, 0, true, true, 1f, "Shader Selector", false);
+            window = UIToolsBuilder.CreateClosableWindow(
+                holder.transform, windowID, width, height, 0, 0,
+                true, true, 1f, "Shader Selector", false
+            );
 
-            var layout = window.CreateLayoutGroup(SFS.UI.ModGUI.Type.Vertical, TextAnchor.UpperCenter, 8f, new RectOffset(10, 10, 10, 10), true);
+            var layout = window.CreateLayoutGroup(
+                SFS.UI.ModGUI.Type.Vertical,
+                TextAnchor.UpperCenter,
+                8f,
+                new RectOffset(10, 10, 10, 10),
+                true
+            );
             window.EnableScrolling(SFS.UI.ModGUI.Type.Vertical);
 
+            // Clear layout children (defensive)
             foreach (Transform child in layout.transform)
                 UnityEngine.Object.Destroy(child.gameObject);
 
@@ -106,122 +148,111 @@ namespace FrameEmbededState
                     height: 38,
                     posX: 0,
                     posY: 0,
-                    text: shaders[i].name,
+                    text: shaders[i].Name,
                     onClick: () => ToggleShader(idx)
                 );
 
-                // Find the "BackOverTint" child and get its Image component to change the color
-                var backOverTint = btn.rectTransform.transform.Find("BackOverTint");
-                if (backOverTint != null)
-                {
-                    var image = backOverTint.GetComponent<Image>();
-                    if (image != null)
-                    {
-                        // capture the normal color (do not overwrite the existing normal color)
-                        shaderButtons.Add((backOverTint.gameObject, image.color));
-                    }
-                }
-                else
-                {   // keep a fallback reference to the button itself if tint not found
-                    // try to capture a fallback image color if available
-                    var fallbackImg = btn.rectTransform.GetComponent<Image>() ?? btn.rectTransform.GetComponentInChildren<Image>();
-                    var normal = fallbackImg != null ? fallbackImg.color : Color.white;
-                    shaderButtons.Add((btn.gameObject, normal));
-                }
-
-                btn.rectTransform.transform.SetParent(layout.transform, false);
-
+                CacheButtonTint(btn.rectTransform);
+                btn.rectTransform.SetParent(layout.transform, false);
             }
 
-            // Highlight the currently selected shader (if any)
             UpdateButtonHighlights();
 
-            // Re-apply selected shader if any
+            // Re-apply selected shader after rebuild
             if (selectedShader >= 0 && selectedShader < shaders.Count)
                 ApplyShader(selectedShader, updateSelection: false);
         }
 
         public static void DestroyUI()
-        {   // Destroy the shader selector window and holder
+        {
             if (holder != null)
                 UnityEngine.Object.Destroy(holder);
+
             holder = null;
             window = null;
-            if (shaderButtons != null)
-                shaderButtons.Clear();
-            shaderButtons = null;
+            buttonTints.Clear();
         }
 
-        static void ApplyShader(int idx, bool updateSelection = true)
-        {   // Apply the selected shader to the overlay manager
+        private static void CacheButtonTint(RectTransform buttonRect)
+        {
+            // Prefer BackOverTint image (matches your original intent)
+            Graphic g = null;
+
+            var backOverTint = buttonRect.transform.Find("BackOverTint");
+            if (backOverTint != null)
+                g = backOverTint.GetComponent<Image>();
+
+            // Fallback: any Graphic on button or children
+            if (g == null)
+                g = buttonRect.GetComponent<Graphic>() ?? buttonRect.GetComponentInChildren<Graphic>();
+
+            // If still null, do nothing
+            if (g == null) return;
+
+            buttonTints.Add(new ButtonTint(g, g.color));
+        }
+
+        private static void ApplyShader(int idx, bool updateSelection)
+        {
             if (overlayManager == null || idx < 0 || idx >= shaders.Count)
                 return;
 
             if (updateSelection)
                 selectedShader = idx;
 
-            var cam = GameCamerasManager.main?.world_Camera?.camera;
+            var cam = GetWorldCamera();
+            var effect = shaders[idx].Effect;
+
             overlayManager.ConfigureOverlay(settings =>
-            {   // bind to camera if available and enable this effect
+            {
                 settings.TargetCamera = cam;
                 settings.Enable = true;
-                settings.Execute = frameData => shaders[idx].effect(settings);
+                settings.Execute = _ => effect(settings);
             });
 
             UpdateButtonHighlights();
         }
 
-        static void ToggleShader(int idx)
-        {   // Toggle shader on/off and restore materials when disabled
+        private static void ToggleShader(int idx)
+        {
             if (overlayManager == null || idx < 0 || idx >= shaders.Count)
                 return;
 
             if (selectedShader == idx)
-            {   // disable and restore materials
+            {
                 selectedShader = -1;
-                var cam = GameCamerasManager.main?.world_Camera?.camera;
-                overlayManager.ConfigureOverlay(s => { s.TargetCamera = cam; s.Enable = false; });
+                SetOverlayEnabled(false);
                 Lib.Renders.ObjectTarget.Release();
             }
             else
+            {
                 ApplyShader(idx, updateSelection: true);
+            }
 
             UpdateButtonHighlights();
         }
 
-        static void UpdateButtonHighlights()
-        {   // Update stored button visuals so only selected shader is highlighted
-            if (shaderButtons == null) return;
-
-            for (int i = 0; i < shaderButtons.Count; i++)
+        private static void UpdateButtonHighlights()
+        {
+            for (int i = 0; i < buttonTints.Count; i++)
             {
-                var (obj, normal) = shaderButtons[i];
-                if (obj == null) continue;
+                var tint = buttonTints[i];
+                if (tint.Graphic == null) continue;
 
-                var image = obj.GetComponent<Image>() ?? obj.GetComponentInChildren<Image>();
-                if (image != null)
-                {   // for selected: add highlight tint to the original normal color (clamped)
-                    if (i == selectedShader)
-                    {
-                        var added = new Color(
-                            Mathf.Clamp01(normal.r + HighlightAdd.r),
-                            Mathf.Clamp01(normal.g + HighlightAdd.g),
-                            Mathf.Clamp01(normal.b + HighlightAdd.b),
-                            Mathf.Clamp01(normal.a + HighlightAdd.a)
-                        );
-                        image.color = added;
-                    }
-                    else
-                    {   // restore original normal color
-                        image.color = normal;
-                    }
-                    continue;
+                if (i == selectedShader)
+                {
+                    var n = tint.Normal;
+                    tint.Graphic.color = new Color(
+                        Mathf.Clamp01(n.r + HighlightAdd.r),
+                        Mathf.Clamp01(n.g + HighlightAdd.g),
+                        Mathf.Clamp01(n.b + HighlightAdd.b),
+                        Mathf.Clamp01(n.a + HighlightAdd.a)
+                    );
                 }
-
-                // fallback: try to set text color on a child Text component
-                var txt = obj.GetComponentInChildren<UnityEngine.UI.Text>();
-                if (txt != null)
-                    txt.color = (i == selectedShader) ? Color.cyan : Color.white;
+                else
+                {
+                    tint.Graphic.color = tint.Normal;
+                }
             }
         }
     }

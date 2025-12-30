@@ -1,15 +1,24 @@
 using HarmonyLib;
 using UnityEngine;
+using System.Linq; // For LINQ usage
+using System.Reflection;
+using System; // For reflection
 
 namespace FrameEmbededState.Lib
 {
+    // Helper to store global compute shader reference
+    public static class ComputeShaderRegistry
+    {   // Holds global reference to loaded compute shader(s)
+        public static ComputeShader ExampleComputeShader;
+    }
+
     public static class Patches
     {   // Entry point for all Harmony patches for this mod
 
         private static bool _applied;
 
         public static void ApplyAll()
-        {
+        {   // Apply all Harmony patches for this mod
             if (_applied)
                 return;
 
@@ -19,7 +28,52 @@ namespace FrameEmbededState.Lib
             SfsPartShaderPatches.Apply(harmony);
             AtmosphereRadialShaderPatches.Apply(harmony);
 
+            // Patch AssetBundle.LoadFromMemoryAsync to scan for compute shaders after bundle load
+            var abType = Type.GetType("UnityEngine.AssetBundle, UnityEngine.AssetBundleModule") ?? typeof(UnityEngine.Object).Assembly.GetType("UnityEngine.AssetBundle");
+            var loadFromMemoryAsync = AccessTools.Method(abType, "LoadFromMemoryAsync", new[] { typeof(byte[]) });
+            if (loadFromMemoryAsync != null)
+                harmony.Patch(loadFromMemoryAsync, postfix: new HarmonyMethod(typeof(Patches), nameof(AssetBundle_LoadFromMemoryAsync_Postfix)));
+
             _applied = true;
+        }
+
+        // Patch: After an AssetBundle is loaded, scan for AddTwoNumbers compute shader
+        public static void AssetBundle_LoadFromMemoryAsync_Postfix(object __result)
+        {   // After loading an asset bundle, check for AddTwoNumbers compute shader
+            if (__result == null)
+                return;
+
+            var reqType = __result.GetType();
+            var assetBundleProp = reqType.GetProperty("assetBundle");
+            var completedEvent = reqType.GetEvent("completed");
+            if (assetBundleProp == null || completedEvent == null)
+                return;
+
+            // Attach handler to completed event
+            completedEvent.AddEventHandler(__result, (Action<AsyncOperation>)(op =>
+            {
+                var bundleObj = assetBundleProp.GetValue(__result, null);
+                if (bundleObj == null)
+                    return;
+
+                // Explicitly select the correct LoadAllAssets overload (returns Object[] and takes no parameters)
+                var bundleType = bundleObj.GetType();
+                var loadAllAssetsMethod = bundleType.GetMethods()
+                    .FirstOrDefault(m =>
+                        m.Name == "LoadAllAssets" &&
+                        m.GetParameters().Length == 0 &&
+                        m.ReturnType == typeof(UnityEngine.Object[]));
+                if (loadAllAssetsMethod == null)
+                    return;
+
+                var allAssets = loadAllAssetsMethod.Invoke(bundleObj, null) as UnityEngine.Object[];
+                if (allAssets == null)
+                    return;
+
+                var shaders = allAssets.OfType<ComputeShader>();
+                foreach (var shader in shaders)
+                    BaseComputeShader.RegisterFromAsset(shader);
+            }));
         }
     }
 

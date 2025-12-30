@@ -203,13 +203,31 @@ namespace FrameEmbededState
             public RendererMaterialGroup[] RendererMaterials;
             public ModelTextureData[] ModelTextures;
 
-            
             public Renderer[] Renderers;      
             public Material[] Materials;      
 
             public bool MaterialsDirty;       
 
             public UnityEngine.Vector2[] CorrectedUvBuffer;
+
+            // --- Added for world-anchored painting ---
+            public Vector3[] AtmosphereUvWorldPos;      // UV→world buffer (mesh UV space, normalized)
+            public int AtmosphereUvWorldW;
+            public int AtmosphereUvWorldH;
+
+            public Vector3[] AtmosphereCartWorldPos;    // Optional: cartesian disc grid (for debug overlays)
+            public int AtmosphereCartWorldW;
+            public int AtmosphereCartWorldH;
+
+            public Vector3 AtmosphereCenter;
+            public float AtmosphereRadius;
+            public Vector3 AtmosphereAxisU;             // world-space “right” on the planet
+            public Vector3 AtmosphereAxisV;             // world-space “forward” on the planet
+
+            // --- Compatibility fields for legacy code ---
+            public Vector3[] AtmosphereWorldPos;        // Alias for cartesian grid (legacy)
+            public int AtmosphereWorldW;
+            public int AtmosphereWorldH;
         }
 
         public struct RendererMaterialGroup

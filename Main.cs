@@ -9,6 +9,8 @@ using FrameEmbededState;
 using ModLoader.Helpers;
 using HarmonyLib;
 using FrameEmbededState.Lib;
+using Resources = UnityEngine.Resources;
+using System.Linq;
 
 namespace FrameEmbededState
 {
@@ -39,6 +41,10 @@ namespace FrameEmbededState
 
         public override void Load()
         {   // Setup overlay and scene hook for edge rendering
+
+            ComputeShaderUtil.AutoRegisterAll();
+            ComputeShaderUtil.RunAndLogAddTwoNumbersTest();
+
             overlay = new VisualOverlayManager();
 
             MainUi.SetOverlayManager(overlay);

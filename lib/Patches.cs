@@ -37,9 +37,9 @@ namespace FrameEmbededState.Lib
             _applied = true;
         }
 
-        // Patch: After an AssetBundle is loaded, scan for AddTwoNumbers compute shader
+        // Patch: After an AssetBundle is loaded, register all compute shaders found in the bundle
         public static void AssetBundle_LoadFromMemoryAsync_Postfix(object __result)
-        {   // After loading an asset bundle, check for AddTwoNumbers compute shader
+        {   // After loading an asset bundle, assign compute shaders to modules by name
             if (__result == null)
                 return;
 
@@ -70,9 +70,21 @@ namespace FrameEmbededState.Lib
                 if (allAssets == null)
                     return;
 
-                var shaders = allAssets.OfType<ComputeShader>();
-                foreach (var shader in shaders)
-                    BaseComputeShader.RegisterFromAsset(shader);
+                var shaders = allAssets.OfType<ComputeShader>().ToList();
+                if (shaders.Count == 0)
+                    return;
+
+                // Register loaded compute shaders with ComputeShaderRegistry modules by name
+                foreach (var module in FrameEmbededState.ComputeShaderRegistry.All)
+                {
+                    var match = shaders.FirstOrDefault(s => string.Equals(s.name, module.Name, StringComparison.OrdinalIgnoreCase));
+                    if (match != null)
+                    {
+                        var field = module.GetType().GetField("_shader", BindingFlags.NonPublic | BindingFlags.Instance);
+                        if (field != null)
+                            field.SetValue(module, match);
+                    }
+                }
             }));
         }
     }

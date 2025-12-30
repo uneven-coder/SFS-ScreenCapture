@@ -25,36 +25,42 @@ namespace FrameEmbededState
 
         private VisualOverlayManager overlay;
 
-        
+
 
         public override void Early_Load()
-        {   // Setup FrameEmbededState and apply Harmony patches early
+        {   // Setup FrameEmbededState, auto-register shaders, run log tests, and apply Harmony patches early
+
+            // Ensure registry is initialized and shaders are loaded
+            FrameEmbededState.ComputeShaderRegistry.Initialize(force: true);
+
             var patcher = new Harmony("mods.FrameEmbededState.Patches");
             patcher.PatchAll();
 
-            // SFS.World.Environment.atmosphere
-
             FrameEmbededState.Lib.Patches.ApplyAll();
+
 
             base.Early_Load();
         }
 
         public override void Load()
         {   // Setup overlay and scene hook for edge rendering
-
-            ComputeShaderUtil.AutoRegisterAll();
-            ComputeShaderUtil.RunAndLogAddTwoNumbersTest();
-
             overlay = new VisualOverlayManager();
 
             MainUi.SetOverlayManager(overlay);
             MainUi.Init();
 
+            // Always show the UI window after load
+            MainUi.RebuildUI();
+
             // Always use the current world camera for overlay
             void SetOverlayToCurrentCamera()
             {   // Set overlay to current world camera
+
+                FrameEmbededState.ComputeShaderRegistry.RunAllValidations();
+                FrameEmbededState.ComputeShaderRegistry.RunAllSelfTests();
+
                 // var cam = GameCamerasManager.main?.world_Camera?.camera;
-                var cam = GameCamerasManager.main?.scaledWorld_Camera?.camera;
+                var cam = GameCamerasManager.main?.world_Camera?.camera;
                 if (cam == null) return;
                 overlay.ConfigureOverlay(settings =>
                 {

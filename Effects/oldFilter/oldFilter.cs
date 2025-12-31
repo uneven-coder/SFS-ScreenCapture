@@ -15,13 +15,7 @@ namespace FrameEmbededState.Effects.oldFilter
         {
             public float Contrast, Exposure, Gamma, GrainAmount, GrainSpeed, FlickerAmt, VignetteAmt, ScanlineAmt, DustChance, ScratchAmt;
             public int ScratchWidth;
-            // To make time pass slower, scale it down (e.g., by 0.5f for half speed)
-            private float _time;
-            public float Time
-            {
-            get => _time  / 100f; // Increased divisor to slow down time further
-            set => _time = value;
-            }
+            public float TimeSpeed;
             public int FrameSeed;
         }
 
@@ -50,7 +44,13 @@ namespace FrameEmbededState.Effects.oldFilter
             mat.SetFloat("_DustChance", args.DustChance);
             mat.SetFloat("_ScratchAmt", args.ScratchAmt);
             mat.SetInt("_ScratchWidth", args.ScratchWidth);
-            mat.SetFloat("_Time", args.Time);  // Set custom time for controlled animation speed
+            mat.SetFloat("_TimeSpeed", args.TimeSpeed);
+        }
+
+        public override void ApplyArgs(Material mat, object args)
+        {   // Apply the arguments to the material
+            if (args is Args _args)
+                ApplyConstants(mat, _args);
         }
     }
 }

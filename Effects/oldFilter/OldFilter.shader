@@ -14,6 +14,7 @@ Shader "Hidden/FrameEmbededState/OldFilter"
         _DustChance ("Dust Chance", Float) = 0.0022   // per-pixel probability
         _ScratchAmt ("Scratch Amount", Float) = 0.22   // 0..0.5
         _ScratchWidth ("Scratch Width", Int) = 1       // px
+        _TimeSpeed ("Time Speed", Float) = 0.1
     }
     SubShader
     {
@@ -30,7 +31,7 @@ Shader "Hidden/FrameEmbededState/OldFilter"
             sampler2D _MainTex;
             float _Contrast, _Exposure, _Gamma, _GrainAmount, _GrainSpeed, _FlickerAmt, _VignetteAmt, _ScanlineAmt, _DustChance, _ScratchAmt;
             int _ScratchWidth;
-            float _Time;
+            float _TimeSpeed;
 
             float2 _MainTex_TexelSize;
 
@@ -47,7 +48,7 @@ Shader "Hidden/FrameEmbededState/OldFilter"
                 float4 c = tex2D(_MainTex, uv);
                 float l = dot(c.rgb, float3(0.299, 0.587, 0.114));
 
-                float t = _Time;
+                float t = _Time.y * _TimeSpeed;
                 float flickerRand = (Hash12(float2(t, 0)) * 2.0 - 1.0) * _FlickerAmt;
                 float flickerSine = sin(t * 6.2) * (_FlickerAmt * 0.35);
                 float flicker = 1.0 + flickerRand + flickerSine;

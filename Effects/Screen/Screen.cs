@@ -14,12 +14,7 @@ namespace FrameEmbededState.Effects.Screen {
         {
             public float DistortionAmt, ColorShiftAmt, FlickerSpeed, HoloIntensity;
             public int ScanLines;
-            private float _time;
-            public float Time
-            {
-                get => _time / 100000f;  // Increased divisor to slow down time further
-                set => _time = value;
-            }
+            public float TimeSpeed;
             public int Seed;
         }
 
@@ -42,7 +37,13 @@ namespace FrameEmbededState.Effects.Screen {
             mat.SetFloat("_FlickerSpeed", args.FlickerSpeed);
             mat.SetFloat("_HoloIntensity", args.HoloIntensity);
             mat.SetInt("_ScanLines", args.ScanLines);
-            mat.SetFloat("_Time", args.Time);  // Set custom time for controlled animation speed
+            mat.SetFloat("_TimeSpeed", args.TimeSpeed);
+        }
+
+        public override void ApplyArgs(Material mat, object args)
+        {   // Apply the arguments to the material
+            if (args is Args _args)
+                ApplyConstants(mat, _args);
         }
     }
 }

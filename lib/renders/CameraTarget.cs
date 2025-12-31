@@ -54,6 +54,10 @@ namespace FrameEmbededState
                 DestroyUiMaterial();
                 _selectedShader = selectedShader;
                 _uiMat = _selectedShader != null ? new(_selectedShader) : null;
+
+                // Apply arguments to the new material if available
+                if (_uiMat != null && OverlayDispatcher.SelectedModule != null && OverlayDispatcher.CurrentArgs != null)
+                    OverlayDispatcher.SelectedModule.ApplyArgs(_uiMat, OverlayDispatcher.CurrentArgs);
             }
 
             // Clear the render texture to prevent old frames from persisting
@@ -170,6 +174,10 @@ namespace FrameEmbededState
                 DestroySceneMaterial();
                 _selectedShader = selectedShader;
                 _sceneMat = selectedShader != null ? new(selectedShader) : null;
+
+                // Apply arguments to the new material if available
+                if (_sceneMat != null && OverlayDispatcher.SelectedModule != null && OverlayDispatcher.CurrentArgs != null)
+                    OverlayDispatcher.SelectedModule.ApplyArgs(_sceneMat, OverlayDispatcher.CurrentArgs);
             }
 
             if (_sceneMat != null)
@@ -210,6 +218,11 @@ namespace FrameEmbededState
             {
                 // Use a temporary material for the blit
                 var mat = new UnityEngine.Material(selectedShader);
+
+                // Apply arguments to the temporary material if available
+                if (OverlayDispatcher.SelectedModule != null && OverlayDispatcher.CurrentArgs != null)
+                    OverlayDispatcher.SelectedModule.ApplyArgs(mat, OverlayDispatcher.CurrentArgs);
+
                 Graphics.Blit(src, dest, mat);
                 UnityEngine.Object.Destroy(mat);
             }

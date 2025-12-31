@@ -46,5 +46,12 @@ namespace FrameEmbededState.Effects.CelShader
             mat.SetColor("_OutlineColor", args.OutlineColor);
             mat.SetFloat("_OutlineThickness", args.OutlineThickness);
         }
+
+        // New: Override to apply arguments
+        public override void ApplyArgs(Material mat, object args)
+        {   // Apply the arguments to the material
+            if (args is Args _args)
+                ApplyConstants(mat, _args);
+        }
     }
 }

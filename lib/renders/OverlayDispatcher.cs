@@ -39,6 +39,11 @@ namespace FrameEmbededState.Lib.Renders
         private static Material _effectMaterial;
         private static OverlayImageEffect _attachedEffect;
 
+        // New: Static properties for selected module and current arguments
+        public static IShaderModule SelectedModule { get; set; }
+        public static object CurrentArgs { get; set; }
+        public static Material CurrentMaterial => _effectMaterial;
+
         public static void Render(
             Camera cam,
             RenderTexture srcRT,
@@ -85,6 +90,10 @@ namespace FrameEmbededState.Lib.Renders
 
                     _effectMaterial = new Material(shader);
                     _currentShader = shader;
+
+                    // Apply arguments to the new material if available
+                    if (SelectedModule != null && CurrentArgs != null)
+                        SelectedModule.ApplyArgs(_effectMaterial, CurrentArgs);
                 }
             }
             else

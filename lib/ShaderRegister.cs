@@ -39,6 +39,9 @@ namespace FrameEmbededState
 
         /// Optional: deeper test (sanity checks). Return false to fail.
         bool TrySelfTest(out string report);
+
+        // New: Apply arguments to a material
+        void ApplyArgs(Material mat, object args);
     }
 
     /// Base class for typed normal shader modules.
@@ -125,6 +128,11 @@ namespace FrameEmbededState
         {
             report = "No self-test implemented.";
             return true;
+        }
+
+        // New: Default implementation for applying arguments; override in subclasses
+        public virtual void ApplyArgs(Material mat, object args)
+        {   // Base implementation does nothing; subclasses should override to apply specific args
         }
     }
 

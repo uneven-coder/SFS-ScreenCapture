@@ -8,6 +8,7 @@ Shader "Hidden/FrameEmbededState/UIHologram"
         _FlickerSpeed ("Flicker Speed", Float) = 10.0
         _HoloIntensity ("Hologram Intensity", Float) = 0.8
         _ScanLines ("Scan Lines", Int) = 100
+        _TimeSpeed ("Time Speed", Float) = 0.1
     }
     SubShader
     {
@@ -24,7 +25,7 @@ Shader "Hidden/FrameEmbededState/UIHologram"
             sampler2D _MainTex;
             float _DistortionAmt, _ColorShiftAmt, _FlickerSpeed, _HoloIntensity;
             int _ScanLines;
-            float _Time;
+            float _TimeSpeed;
 
             float2 _MainTex_TexelSize;
 
@@ -38,7 +39,7 @@ Shader "Hidden/FrameEmbededState/UIHologram"
             float4 frag(v2f_img i) : SV_Target
             {
                 float2 uv = i.uv;
-                float t = _Time;  // Use custom time instead of _Time.y
+                float t = _Time.y * _TimeSpeed;
 
                 // Distortion
                 float distort = sin(uv.y * 10.0 + t * 2.0) * _DistortionAmt;

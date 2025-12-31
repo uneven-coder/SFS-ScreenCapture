@@ -7,33 +7,24 @@ using SFS.UI.ModGUI;
 using UITools;
 using ModLoader.Helpers;
 using SFS.World;
+using FrameEmbededState;
+using FrameEmbededState.Lib.Renders; // <-- Add this for OverlayDispatcher and OverlayRenderMode
 
 namespace FrameEmbededState
 {
-    public delegate void ShaderEffectDelegate(VisualOverlayManager.VisualOverlaySettings settings);
-
-    // Base class for auto-registering shader effects
-    public abstract class BaseShaderEffect
-    {
-        protected BaseShaderEffect(string name, string description) =>
-            MainUi.RegisterShader(name, description, ApplyEffect);
-
-        protected abstract void ApplyEffect(VisualOverlayManager.VisualOverlaySettings settings);
-    }
-
     public static class MainUi
     {
         private readonly struct ShaderInfo
         {
             public readonly string Name;
             public readonly string Description;
-            public readonly ShaderEffectDelegate Effect;
+            public readonly string ShaderSource; // Shader name or compute shader path
 
-            public ShaderInfo(string name, string description, ShaderEffectDelegate effect)
+            public ShaderInfo(string name, string description, string shaderSource)
             {
                 Name = name;
                 Description = description;
-                Effect = effect;
+                ShaderSource = shaderSource;
             }
         }
 
@@ -46,7 +37,6 @@ namespace FrameEmbededState
         private static readonly List<ShaderInfo> shaders = new(16);
         private static readonly List<ButtonTint> buttonTints = new(16);
 
-        private static VisualOverlayManager overlayManager;
         private static GameObject holder;
         private static ClosableWindow window;
 
@@ -60,8 +50,8 @@ namespace FrameEmbededState
         private const int RowHeight = 44;
 
         public static void Init()
-        {
-            ForceLoadAllShaderEffects();
+        {   // Initialize and register all shaders/effects
+            RegisterAllShaders();
 
             SceneHelper.OnWorldSceneLoaded += RebuildUI;
             SceneHelper.OnBuildSceneLoaded += RebuildUI;
@@ -69,31 +59,32 @@ namespace FrameEmbededState
             SceneHelper.OnBuildSceneUnloaded += DestroyUI;
         }
 
-        public static void SetOverlayManager(VisualOverlayManager mgr)
+        // Register a GPU shader effect (ShaderLab)
+        public static void RegisterGpuShader(string name, string description, string shaderSource)
         {
-            overlayManager = mgr;
-            ConfigureOverlay(-1);
-
-            // Always rebuild UI when overlay manager is set to ensure window is visible
+            shaders.Add(new ShaderInfo(name, description, shaderSource));
+            Debug.Log($"[FrameEmbededState] Registered GPU shader: {name} - {description}");
             RebuildUI();
         }
 
-        public static void RegisterShader(string name, string description, ShaderEffectDelegate effect)
-        {
-            shaders.Add(new ShaderInfo(name, description, effect));
-            Debug.Log($"[FrameEmbededState] Registered shader: {name} - {description}");
+        // Register all shaders here
+        private static void RegisterAllShaders()
+        {   // Discover and register all shader modules automatically
 
-            // Always rebuild UI after registering a shader to ensure new shaders appear
-            RebuildUI();
-        }
+            shaders.Clear();
 
-        private static void ForceLoadAllShaderEffects()
-        {
-            var baseType = typeof(BaseShaderEffect);
-            foreach (var t in baseType.Assembly.GetTypes())
+            foreach (var module in ShaderRegistry.AllModules)
             {
-                if (t.IsClass && !t.IsAbstract && baseType.IsAssignableFrom(t))
-                    RuntimeHelpers.RunClassConstructor(t.TypeHandle);
+                if (module.Shader != null)
+                    Debug.Log($"[MainUi] Found GPU shader: {module.Name} ({module.Shader.name})");
+                else
+                    Debug.LogWarning($"[MainUi] GPU shader not found: {module.Name}");
+
+                shaders.Add(new ShaderInfo(
+                    module.Name,
+                    $"Shader module: {module.Name}",
+                    module.Shader != null ? module.Shader.name : null
+                ));
             }
         }
 
@@ -106,31 +97,55 @@ namespace FrameEmbededState
         /// idx >= 0 => enable and set Execute to the shader effect.
         /// </summary>
         private static void ConfigureOverlay(int idx)
-        {
-            if (overlayManager == null) return;
+        {   // Configure overlay for selected shader type
 
             var cam = WorldCamera;
 
             if (idx < 0 || idx >= shaders.Count)
             {
-                overlayManager.ConfigureOverlay(s =>
+                // Only disable overlay if there was a previous shader selected
+                if (selectedShader >= 0)
                 {
-                    s.TargetCamera = cam;
-                    s.Enable = false;
-                    s.Execute = null;
-                });
-                Debug.Log("[MainUi] Overlay disabled.");
+                    Debug.Log("[MainUi] Overlay disabled (no shader selected).");
+                    OverlayDispatcher.Render(
+                        cam,
+                        null,
+                        null,
+                        null, // Explicitly pass null shader to disable
+                        null,
+                        OverlayRenderMode.BehindUI
+                    );
+                }
                 return;
             }
 
-            var effect = shaders[idx].Effect;
+            var info = shaders[idx];
 
-            overlayManager.ConfigureOverlay(s =>
-            {   // Let effect set up all settings, including RenderMode
-                s.TargetCamera = cam;
-                s.Enable = true;
-                effect(s); // The effect sets RenderMode, BytecodeArgs, etc.
-            });
+            var module = ShaderRegistry.Get(info.Name);
+            if (module != null && module.Shader != null)
+            {
+                OverlayRenderMode renderMode = OverlayRenderMode.BehindUI;
+                var moduleType = module.GetType();
+                var renderTargetProp = moduleType.GetProperty("RenderTarget");
+                if (renderTargetProp != null)
+                    renderMode = (OverlayRenderMode)renderTargetProp.GetValue(module);
+
+                Debug.Log($"[MainUi] Selecting shader '{info.Name}' ({module.Shader.name}) with mode '{renderMode}'.");
+
+                // Log UI shader assignment
+                Debug.Log($"[MainUi] Setting CurrentUiShader.Value = {module.Shader?.name ?? "null"}");
+
+                OverlayDispatcher.Render(
+                    cam,
+                    null,
+                    null,
+                    module.Shader, // Always pass the actual shader instance
+                    null,
+                    renderMode
+                );
+            }
+            else
+                Debug.LogWarning($"[MainUi] Shader module not found or shader missing: {info.Name}");
         }
 
         public static void RebuildUI()
@@ -139,7 +154,6 @@ namespace FrameEmbededState
 
             buttonTints.Clear();
 
-            // Always start disabled on rebuild; selection (if any) will be re-applied below
             ConfigureOverlay(-1);
 
             holder = Builder.CreateHolder(Builder.SceneToAttach.CurrentScene, "Shader Selector Holder");
@@ -177,7 +191,6 @@ namespace FrameEmbededState
                 btn.rectTransform.SetParent(layout.transform, false);
             }
 
-            // Re-apply selection after rebuild (if still valid)
             if (selectedShader >= 0 && selectedShader < shaders.Count)
                 ConfigureOverlay(selectedShader);
             else
@@ -198,7 +211,6 @@ namespace FrameEmbededState
 
         private static void CacheButtonTint(RectTransform buttonRect)
         {
-            // Prefer the intended element if present; otherwise fall back.
             Graphic g = null;
 
             var t = buttonRect.Find("BackOverTint");
@@ -214,20 +226,15 @@ namespace FrameEmbededState
 
         private static void ToggleShader(int idx)
         {
-            if (overlayManager == null || idx < 0 || idx >= shaders.Count)
+            if (idx < 0 || idx >= shaders.Count)
                 return;
 
             if (selectedShader == idx)
-            {
                 selectedShader = -1;
-                ConfigureOverlay(-1);
-                Lib.Renders.ObjectTarget.Release();
-            }
             else
-            {
                 selectedShader = idx;
-                ConfigureOverlay(idx);
-            }
+
+            ConfigureOverlay(selectedShader);
 
             UpdateButtonHighlights();
         }
@@ -236,13 +243,11 @@ namespace FrameEmbededState
         {
             for (int i = 0; i < buttonTints.Count; i++)
             {
-            var bt = buttonTints[i];
-            if (bt.Graphic == null) continue;
+                var bt = buttonTints[i];
+                if (bt.Graphic == null) continue;
 
-            // Inline conditional to set highlight
                 bt.Graphic.color = (i == selectedShader) ? (bt.Normal + HighlightAdd) : bt.Normal;
             }
-        
         }
     }
 }

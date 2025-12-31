@@ -4,132 +4,121 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.Scripting;
+using FrameEmbededState; // <-- Fix: ensure ShaderAssetRegistry is visible
+
 
 namespace FrameEmbededState
 {
-    /// Attach this to shader module classes to declare metadata without central registration.
+    /// Attach this to shader module classes to declare metadata for normal shaders.
     [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
-    public sealed class ComputeShaderModuleAttribute : Attribute
+    public sealed class ShaderModuleAttribute : Attribute
     {
         public string Name { get; }
-        public string KernelName { get; }
+        public ShaderType Type { get; }
+        public string LoadBy { get; }
+        public FrameEmbededState.Lib.Renders.OverlayRenderMode RenderTarget { get; }
 
-        public ComputeShaderModuleAttribute(string name, string kernelName = "CSMain")
+        public ShaderModuleAttribute(string name, ShaderType type, string loadBy, FrameEmbededState.Lib.Renders.OverlayRenderMode renderTarget)
         {
             Name = name;
-            KernelName = kernelName;
+            Type = type;
+            LoadBy = loadBy;
+            RenderTarget = renderTarget;
         }
     }
 
-    /// Non-generic interface for registry storage.
-    public interface IComputeShaderModule
+    /// Non-generic interface for normal shader registry storage.
+    public interface IShaderModule
     {
         string Name { get; }
-        string KernelName { get; }
-        ComputeShader Shader { get; }
+        Shader Shader { get; }
         bool IsLoaded { get; }
 
-        object RunBoxed(object args);
-
-        /// Lightweight checks: platform support, shader loaded, kernel exists.
+        /// Lightweight checks: platform support, shader loaded.
         bool TryValidate(out string error);
 
-        /// Optional: deeper test (dispatch, sanity checks). Return false to fail.
+        /// Optional: deeper test (sanity checks). Return false to fail.
         bool TrySelfTest(out string report);
     }
 
-    /// Base class for typed shader modules.
-    public abstract class ComputeShaderModule<TArgs, TResult> : IComputeShaderModule
+    /// Base class for typed normal shader modules.
+    public abstract class ShaderModule<TArgs, TResult> : IShaderModule
     {
-        protected ComputeShader _shader;
+        protected Shader _shader;
         private string _name;
-        private string _kernelName;
+        private ShaderType _type;
+        private string _loadBy;
+        private FrameEmbededState.Lib.Renders.OverlayRenderMode _renderTarget;
+        private bool _loggedMissing;
 
-        protected ComputeShaderModule()
+        protected ShaderModule()
         {
-            // Pull defaults from attribute if present.
-            var attr = GetType().GetCustomAttribute<ComputeShaderModuleAttribute>();
+            var attr = GetType().GetCustomAttribute<ShaderModuleAttribute>();
             if (attr != null)
             {
                 _name = attr.Name;
-                _kernelName = attr.KernelName;
+                _type = attr.Type;
+                _loadBy = attr.LoadBy;
+                _renderTarget = attr.RenderTarget;
             }
+            // Do NOT load or assign _shader here; lazy loading is handled in LoadShader().
         }
 
-        /// Override if you prefer code-defined metadata instead of attribute.
         public virtual string Name => _name ?? GetType().Name;
-        public virtual string KernelName => _kernelName ?? "CSMain";
-        public ComputeShader Shader => _shader;
-        public bool IsLoaded => _shader != null;
+        public FrameEmbededState.Lib.Renders.OverlayRenderMode RenderTarget => _renderTarget;
 
-        /// Default loader uses Resources. Override for Addressables / injected refs / custom lookup.
-        protected virtual ComputeShader LoadShader()
-        {   // No-op: shader is assigned externally
-            return null;
+        // Lazy load: allows AssetBundle-discovered shaders to be used after load.
+        public Shader Shader => _shader != null ? _shader : LoadShader();
+        public bool IsLoaded => Shader != null;
+
+        protected virtual Shader LoadShader()
+        {   // Load shader from registry, built-in, or resources
+            if (_shader != null) return _shader;
+            if (_type != ShaderType.Shader) return null;
+
+            // 1) Try registry (AssetBundle-discovered)
+            if (!string.IsNullOrEmpty(_loadBy) && ShaderAssetRegistry.TryGetShader(_loadBy, out var fromRegistry) && fromRegistry != null)
+                return _shader = fromRegistry;
+
+            // 2) Try Shader.Find (built-in/global)
+            if (!string.IsNullOrEmpty(_loadBy))
+                _shader = UnityEngine.Shader.Find(_loadBy);
+
+            // 3) Try Resources (custom asset in Resources/)
+            if (_shader == null && !string.IsNullOrEmpty(_loadBy))
+                _shader = Resources.Load<Shader>(_loadBy);
+
+            if (_shader == null && !_loggedMissing && !string.IsNullOrEmpty(_loadBy))
+            {   // Log a detailed warning only once per module per session
+                _loggedMissing = true;
+                Debug.LogWarning(
+                    $"[ShaderModule] Shader not found for module '{Name}'.\n" +
+                    $"  Attempted load key: '{_loadBy}'\n" +
+                    $"  - AssetBundle registry: {(ShaderAssetRegistry.TryGetShader(_loadBy, out var reg) && reg != null ? "FOUND" : "NOT FOUND")}\n" +
+                    $"  - Shader.Find: {(UnityEngine.Shader.Find(_loadBy) != null ? "FOUND" : "NOT FOUND")}\n" +
+                    $"  - Resources.Load: {(Resources.Load<Shader>(_loadBy) != null ? "FOUND" : "NOT FOUND")}\n" +
+                    $"  This warning appears only once per session for this module. " +
+                    $"If the shader is loaded via AssetBundle, ensure the bundle is loaded before this module is initialized."
+                ); // end of warning
+            }
+
+            return _shader;
         }
 
-        public TResult Run(in TArgs args)
-        {   // Run the compute shader with provided arguments, error if not assigned
-            if (!SystemInfo.supportsComputeShaders)
-                throw new NotSupportedException("Compute shaders are not supported on this platform.");
+        // Material management is handled externally; this class does not create or manage materials.
 
-            var shader = Shader;
-            if (shader == null)
-                throw new InvalidOperationException($"ComputeShader for '{Name}' is not assigned. This usually means the asset bundle containing the compute shader has not been loaded or the shader name does not match.");
-
-            int kernel = shader.FindKernel(KernelName);
-
-            Bind(shader, kernel, in args);
-
-            var (gx, gy, gz) = GetDispatchGroups(in args);
-            shader.Dispatch(kernel, gx, gy, gz);
-
-            return GetResult(in args);
-        }
-
-        /// Set textures/buffers/constants.
-        protected abstract void Bind(ComputeShader shader, int kernel, in TArgs args);
-
-        /// Compute dispatch group counts.
-        protected abstract (int x, int y, int z) GetDispatchGroups(in TArgs args);
-
-        /// Most shaders write into a target in args; default is default(TResult). Override as needed.
-        protected virtual TResult GetResult(in TArgs args) => default;
-
-        object IComputeShaderModule.RunBoxed(object args)
-        {
-            if (args is not TArgs typed)
-                throw new ArgumentException($"'{Name}' expected args of type {typeof(TArgs).Name} but got {args?.GetType().Name ?? "null"}.");
-            return Run(in typed);
-        }
+        public abstract TResult Run(in TArgs args);
 
         public virtual bool TryValidate(out string error)
-        {   // Validate that the compute shader is assigned and kernel exists
+        {
             error = null;
-
-            if (!SystemInfo.supportsComputeShaders)
+            var s = Shader;
+            if (s == null)
             {
-                error = "SystemInfo.supportsComputeShaders == false";
+                error = $"Shader asset not assigned/loaded for '{Name}' (key: '{_loadBy ?? "null"}').";
                 return false;
             }
-
-            var shader = Shader;
-            if (shader == null)
-            {
-                error = $"ComputeShader asset not assigned for '{Name}'. This usually means the asset bundle containing the compute shader has not been loaded or the shader name does not match.";
-                return false;
-            }
-
-            try
-            {
-                shader.FindKernel(KernelName);
-                return true;
-            }
-            catch (Exception e)
-            {
-                error = $"Kernel '{KernelName}' not found: {e.Message}";
-                return false;
-            }
+            return true;
         }
 
         public virtual bool TrySelfTest(out string report)
@@ -139,127 +128,70 @@ namespace FrameEmbededState
         }
     }
 
-    /// Central registry: auto-discovers any IComputeShaderModule with a public parameterless ctor.
-    public static class ComputeShaderRegistry
+    /// Central registry: auto-discovers any IShaderModule with a public parameterless ctor.
+    public static class ShaderRegistry
     {
-        private static readonly Dictionary<string, IComputeShaderModule> _byName = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, IShaderModule> _byName = new(StringComparer.Ordinal);
         private static readonly object _lock = new();
         private static bool _initialized;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-        private static void AutoInit() => Initialize();
+        public static bool IsInitialized => _initialized;
+
+        // [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        // private static void AutoInit() => Initialize();
 
         public static void Initialize(bool force = false)
-        {
+        {   // Explicitly initialize the registry; no longer auto-initialized
             lock (_lock)
             {
                 if (_initialized && !force) return;
                 _initialized = true;
+
+                Debug.Log("[ShaderRegistry] Initializing shader module registry.");
+
                 _byName.Clear();
 
-                foreach (var t in DiscoverModuleTypes())
+                foreach (var t in DiscoverModuleTypes(typeof(IShaderModule)))
                 {
-                    if (t.IsAbstract || t.IsInterface) continue;
                     if (t.GetConstructor(Type.EmptyTypes) == null) continue;
 
-                    IComputeShaderModule instance;
                     try
                     {
-                        instance = (IComputeShaderModule)Activator.CreateInstance(t);
+                        var instance = (IShaderModule)Activator.CreateInstance(t);
+                        Register(instance);
                     }
                     catch (Exception e)
                     {
-                        Debug.LogWarning($"[ComputeShaderRegistry] Failed to create '{t.FullName}': {e}");
-                        continue;
+                        Debug.LogWarning($"[ShaderRegistry] Failed to create '{t.FullName}': {e}");
                     }
-
-                    Register(instance);
                 }
             }
         }
 
-        public static void Register(IComputeShaderModule module)
+        public static void Register(IShaderModule module)
         {
             if (module == null) return;
             if (string.IsNullOrWhiteSpace(module.Name))
             {
-                Debug.LogWarning($"[ComputeShaderRegistry] Skipping module with empty Name: {module.GetType().FullName}");
+                Debug.LogWarning($"[ShaderRegistry] Skipping module with empty Name: {module.GetType().FullName}");
                 return;
             }
 
             _byName[module.Name] = module;
         }
 
-        public static IComputeShaderModule Get(string name)
-        {
-            Initialize();
-            return (name != null && _byName.TryGetValue(name, out var m)) ? m : null;
+        public static IShaderModule Get(string name)
+        {   // Only return if already initialized; never auto-initialize
+            return (_initialized && name != null && _byName.TryGetValue(name, out var m)) ? m : null;
         }
 
-        public static T Get<T>() where T : class, IComputeShaderModule
-        {
-            Initialize();
-            return _byName.Values.OfType<T>().FirstOrDefault();
+        public static IReadOnlyCollection<IShaderModule> AllModules
+        {   // Only return if already initialized; never auto-initialize
+            get => _initialized ? _byName.Values.ToArray() : Array.Empty<IShaderModule>();
         }
 
-        public static IReadOnlyCollection<IComputeShaderModule> All
+        private static IEnumerable<Type> DiscoverModuleTypes(Type target)
         {
-            get { Initialize(); return _byName.Values.ToArray(); }
-        }
-
-        public static (int passed, int failed) RunAllValidations(bool log = true)
-        {
-            Initialize();
-            int passed = 0, failed = 0;
-
-            foreach (var m in All)
-            {
-                if (m.TryValidate(out var err))
-                {
-                    passed++;
-                    if (log) Debug.Log($"[ComputeShaderRegistry] OK: {m.Name}");
-                }
-                else
-                {
-                    failed++;
-                    if (log) Debug.LogError($"[ComputeShaderRegistry] FAIL: {m.Name} — {err}");
-                }
-            }
-            return (passed, failed);
-        }
-
-        public static (int passed, int failed) RunAllSelfTests(bool log = true)
-        {
-            Initialize();
-            int passed = 0, failed = 0;
-
-            foreach (var m in All)
-            {
-                bool ok;
-                string msg;
-
-                try { ok = m.TrySelfTest(out msg); }
-                catch (Exception e) { ok = false; msg = e.ToString(); }
-
-                if (ok)
-                {
-                    passed++;
-                    if (log) Debug.Log($"[ComputeShaderRegistry] TEST OK: {m.Name} — {msg}");
-                }
-                else
-                {
-                    failed++;
-                    if (log) Debug.LogError($"[ComputeShaderRegistry] TEST FAIL: {m.Name} — {msg}");
-                }
-            }
-            return (passed, failed);
-        }
-
-        private static IEnumerable<Type> DiscoverModuleTypes()
-        {   // Discover all non-abstract, non-generic, non-interface types implementing IComputeShaderModule
-
-            var target = typeof(IComputeShaderModule);
-
             return AppDomain.CurrentDomain
                 .GetAssemblies()
                 .SelectMany(SafeGetTypes)
@@ -278,5 +210,10 @@ namespace FrameEmbededState
             catch (ReflectionTypeLoadException e) { return e.Types.Where(x => x != null); }
             catch { return Array.Empty<Type>(); }
         }
+    }
+
+    public enum ShaderType
+    {   // Type of shader module (normal only, compute removed)
+        Shader
     }
 }

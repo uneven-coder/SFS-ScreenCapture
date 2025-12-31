@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 [assembly: AssemblyVersion("1.0.0.0")]
 [assembly: AssemblyTitle("FrameEmbededState")]
-[assembly: AssemblyDescription("Makes the ui more imformative with color")]
+[assembly: AssemblyDescription("A mod that adds the functionality to load custom shaders.")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyProduct("FrameEmbededState")]

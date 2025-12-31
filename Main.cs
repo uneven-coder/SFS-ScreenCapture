@@ -23,50 +23,32 @@ namespace FrameEmbededState
         public override string Description => "Dynamic visual overlay system (caller-authored effects).";
         public override string MinimumGameVersionNecessary => "1.5.6";
 
-        private VisualOverlayManager overlay;
-
 
 
         public override void Early_Load()
-        {   // Setup FrameEmbededState, auto-register shaders, run log tests, and apply Harmony patches early
+        {   // Setup FrameEmbededState, apply Harmony patches, then auto-register shaders and run log tests
 
-            // Ensure registry is initialized and shaders are loaded
-            FrameEmbededState.ComputeShaderRegistry.Initialize(force: true);
-
-            var patcher = new Harmony("mods.FrameEmbededState.Patches");
-            patcher.PatchAll();
+            // Apply Harmony patches and library patches first
+            // var patcher = new Harmony("mods.FrameEmbededState.Patches");
+            // patcher.PatchAll();
 
             FrameEmbededState.Lib.Patches.ApplyAll();
 
+            // Ensure shader registry is initialized and shaders are loaded after patches
+            
 
             base.Early_Load();
         }
 
         public override void Load()
         {   // Setup overlay and scene hook for edge rendering
-            overlay = new VisualOverlayManager();
+        
 
-            MainUi.SetOverlayManager(overlay);
-            MainUi.Init();
-
-            // Always show the UI window after load
-            MainUi.RebuildUI();
-
-            // Always use the current world camera for overlay
             void SetOverlayToCurrentCamera()
-            {   // Set overlay to current world camera
-
-                FrameEmbededState.ComputeShaderRegistry.RunAllValidations();
-                FrameEmbededState.ComputeShaderRegistry.RunAllSelfTests();
-
-                // var cam = GameCamerasManager.main?.world_Camera?.camera;
-                var cam = GameCamerasManager.main?.world_Camera?.camera;
-                if (cam == null) return;
-                overlay.ConfigureOverlay(settings =>
-                {
-                    settings.TargetCamera = cam;
-                    settings.Enable = false;
-                });
+            {   // Set overlay to current world camera and show UI
+            FrameEmbededState.ShaderRegistry.Initialize(force: true);
+            MainUi.Init();
+                MainUi.RebuildUI();
             }
 
             SceneManager.sceneLoaded += (_, __) => SetOverlayToCurrentCamera();

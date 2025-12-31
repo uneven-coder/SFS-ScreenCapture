@@ -1,304 +1,287 @@
-namespace FrameEmbededState;
+#nullable enable
 
-using UnityEngine;
-using Unity.Collections;
-using FrameEmbededState;
+namespace FrameEmbededState
+{
+    using UnityEngine;
+    using FrameEmbededState.Lib.Renders;
 
-    /// <summary>
-    /// UI-only renderer. Never renders to screen.
-    /// </summary>
-    public static class Exclusive
+    public static class Inclusive_RenderActive
     {
-        private static Texture2D _srcTex;
-        private static Texture2D _dstTex;
-        private static NativeArray<Color32> _src;
-        private static NativeArray<Color32> _dst;
-        private static int _w, _h;
-        private static Rect _rect;
+        public static bool Value;
+    }
+    public static class CurrentScreenShader
+    {
+        public static Shader? Value;
+    }
+    public static class CurrentUiShader
+    {
+        public static Shader? Value;
+    }
 
-        private static RenderTexture _uiRT;
+    public static class Exclusive_Render
+    {
+        public static RenderTexture? UiBackgroundTexture;
+        public static readonly int GlobalUiBackgroundTexId = Shader.PropertyToID("_FrameEmbededState_UIBackgroundTex");
 
-        public static RenderTexture RenderUI(
-            VisualOverlayManager.VisualOverlaySettings settings,
-            Material gpuMaterial,
-            RenderTexture srcRT)
+        public static Texture? UiBlurOverrideTexture
         {
-            if (settings == null || srcRT == null)
-                return null;
-
-            // If nothing would render, don't allocate or compute
-            if (!settings.UseGpuShader && settings.Execute == null)
-                return null;
-
-            // If GPU requested but material missing AND no CPU fallback, do nothing
-            if (settings.UseGpuShader && gpuMaterial == null && settings.Execute == null)
-                return null;
-
-            int w = srcRT.width;
-            int h = srcRT.height;
-
-            EnsureUiRT(w, h);
-            ClearUiRT();
-
-            // GPU path
-            if (settings.UseGpuShader && gpuMaterial != null)
-            {
-                Graphics.Blit(srcRT, _uiRT, gpuMaterial);
-                return _uiRT;
-            }
-
-            // CPU path (requires Execute)
-            if (settings.Execute == null)
-                return null;
-
-            EnsureCpuBuffers(w, h);
-
-            var prev = RenderTexture.active;
-            try
-            {
-                RenderTexture.active = srcRT;
-                _srcTex.ReadPixels(_rect, 0, 0, false);
-            }
-            finally
-            {
-                RenderTexture.active = prev;
-            }
-
-            CopyNative(_src, _dst);
-
-            settings.Execute(new VisualOverlayManager.FrameData
-            {
-                Source = _src,
-                Result = _dst,
-                Width = _w,
-                Height = _h
-            });
-
-            _dstTex.Apply(false, false);
-            Graphics.Blit(_dstTex, _uiRT);
-
-            return _uiRT;
+            get => _uiBlurOverrideTexture;
+            set => _uiBlurOverrideTexture = value;
         }
+        private static Texture? _uiBlurOverrideTexture;
 
-        public static void Release()
-        {
-            if (_uiRT != null)
+        private static Material? _uiMat;
+        private static Shader? _selectedShader;
+
+        public static RenderTexture? RenderUIBackground(RenderTexture sceneTexture, Shader? selectedShader)
+        {   // Render UI background using the selected shader, preserving alpha
+
+            Debug.Log($"[Exclusive_Render] RenderUIBackground called. sceneTexture: {(sceneTexture != null ? sceneTexture.name : "null")}, selectedShader: {(selectedShader != null ? selectedShader.name : "null")}");
+
+            if (sceneTexture == null)
+                return null;
+
+            EnsureUIRenderTexture(sceneTexture);
+
+            Debug.Log($"[Exclusive_Render] Setting CurrentUiShader.Value = {selectedShader?.name ?? "null"}");
+
+            CurrentUiShader.Value = selectedShader;
+            Inclusive_RenderActive.Value = selectedShader != null;
+
+            if (selectedShader != _selectedShader)
             {
-                _uiRT.Release();
-                Object.Destroy(_uiRT);
+                Debug.Log($"[Exclusive_Render] Shader changed. Old: {_selectedShader?.name ?? "null"}, New: {selectedShader?.name ?? "null"}");
+                DestroyUiMaterial();
+                _selectedShader = selectedShader;
+                _uiMat = _selectedShader != null ? new(_selectedShader) : null;
             }
 
-            if (_srcTex != null) Object.Destroy(_srcTex);
-            if (_dstTex != null) Object.Destroy(_dstTex);
-
-            _uiRT = null;
-            _srcTex = null;
-            _dstTex = null;
-            _src = default;
-            _dst = default;
-            _w = _h = 0;
-            _rect = default;
-        }
-
-        private static void EnsureUiRT(int w, int h)
-        {
-            if (_uiRT != null && _uiRT.width == w && _uiRT.height == h)
-                return;
-
-            if (_uiRT != null)
+            // Clear the render texture to prevent old frames from persisting
+            if (UiBackgroundTexture != null)
             {
-                _uiRT.Release();
-                Object.Destroy(_uiRT);
-            }
-
-            _uiRT = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32)
-            {
-                name = "VisualOverlay.UI",
-                useMipMap = false,
-                autoGenerateMips = false,
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
-            };
-            _uiRT.Create();
-        }
-
-        private static void ClearUiRT()
-        {
-            var prev = RenderTexture.active;
-            try
-            {
-                RenderTexture.active = _uiRT;
+                var prev = RenderTexture.active;
+                RenderTexture.active = UiBackgroundTexture;
                 GL.Clear(true, true, Color.clear);
-            }
-            finally
-            {
                 RenderTexture.active = prev;
             }
-        }
 
-        private static void EnsureCpuBuffers(int w, int h)
-        {
-            if (_srcTex != null && _w == w && _h == h)
-                return;
+            if (_uiMat != null)
+                Graphics.Blit(sceneTexture, UiBackgroundTexture, _uiMat);
+            else
+                Graphics.Blit(sceneTexture, UiBackgroundTexture);
 
-            if (_srcTex != null) Object.Destroy(_srcTex);
-            if (_dstTex != null) Object.Destroy(_dstTex);
+            Shader.SetGlobalTexture(GlobalUiBackgroundTexId, UiBackgroundTexture);
 
-            _w = w;
-            _h = h;
-            _rect = new Rect(0, 0, w, h);
+            UiBlurOverrideTexture = UiBackgroundTexture;
 
-            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false)
-            {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
-            };
+            Debug.Log($"[Exclusive_Render] UI background rendered and global texture set.");
 
-            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false)
-            {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Bilinear
-            };
-
-            _src = _srcTex.GetRawTextureData<Color32>();
-            _dst = _dstTex.GetRawTextureData<Color32>();
-        }
-
-        private static void CopyNative(NativeArray<Color32> from, NativeArray<Color32> to)
-        {
-            int n = Mathf.Min(from.Length, to.Length);
-            if (n <= 0)
-                return;
-
-
-            for (int i = 0; i < n; i++)
-                to[i] = from[i];
-
-        }
-    }
-
-    public static class RenderBehindUIRenderer
-    {
-        private static Texture2D _srcTex;
-        private static Texture2D _dstTex;
-        private static NativeArray<Color32> _src;
-        private static NativeArray<Color32> _dst;
-        private static int _w;
-        private static int _h;
-        private static Rect _rect;
-
-        public static void Render(
-            VisualOverlayManager.VisualOverlaySettings settings,
-            Material gpuMaterial,
-            RenderTexture srcRT,
-            RenderTexture dstRT)
-        {
-            if (settings == null)
-            {
-                Graphics.Blit(srcRT, dstRT);
-                return;
-            }
-
-            if (settings.UseGpuShader && gpuMaterial != null)
-            {
-                Graphics.Blit(srcRT, dstRT, gpuMaterial);
-                return;
-            }
-
-            if (settings.Execute == null)
-            {
-                Graphics.Blit(srcRT, dstRT);
-                return;
-            }
-
-            EnsureCpuBuffers(srcRT.width, srcRT.height);
-
-            var prev = RenderTexture.active;
-            RenderTexture.active = srcRT;
-            _srcTex.ReadPixels(_rect, 0, 0, false);
-            RenderTexture.active = prev;
-
-            CopyNative(_src, _dst);
-
-            settings.Execute(new VisualOverlayManager.FrameData
-            {
-                Source = _src,
-                Result = _dst,
-                Width = _w,
-                Height = _h
-            });
-
-            _dstTex.Apply(false, false);
-            Graphics.Blit(_dstTex, dstRT);
+            return UiBackgroundTexture;
         }
 
         public static void Release()
-        {
-            if (_srcTex != null) UnityEngine.Object.Destroy(_srcTex);
-            if (_dstTex != null) UnityEngine.Object.Destroy(_dstTex);
-            _srcTex = null;
-            _dstTex = null;
-            _w = 0;
-            _h = 0;
-        }
+        {   // Release all resources and reset state
+            Debug.Log("[Exclusive_Render] Release called.");
 
-        private static void EnsureCpuBuffers(int w, int h)
-        {
-            if (_srcTex != null && _w == w && _h == h)
-                return;
+            DestroyUiMaterial();
 
-            Release();
+            CurrentUiShader.Value = null;
+            Inclusive_RenderActive.Value = false;
 
-            _w = w;
-            _h = h;
-            _rect = new Rect(0, 0, w, h);
-
-            _srcTex = new Texture2D(w, h, TextureFormat.RGBA32, false, false)
+            if (UiBackgroundTexture != null)
             {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Point
-            };
-
-            _dstTex = new Texture2D(w, h, TextureFormat.RGBA32, false, false)
-            {
-                wrapMode = TextureWrapMode.Clamp,
-                filterMode = FilterMode.Point
-            };
-
-            _src = _srcTex.GetRawTextureData<Color32>();
-            _dst = _dstTex.GetRawTextureData<Color32>();
-        }
-
-        private static void CopyNative(NativeArray<Color32> from, NativeArray<Color32> to)
-        {
-            int n = Mathf.Min(from.Length, to.Length);
-            for (int i = 0; i < n; i++)
-                to[i] = from[i];
-        }
-    }
-
-        public static class Inclusive
-    {
-        public static RenderTexture Render(
-            VisualOverlayManager.VisualOverlaySettings settings,
-            Material gpuMaterial,
-            RenderTexture srcRT,
-            RenderTexture dstRT,
-            bool renderUI)
-        {
-            if (settings == null)
-            {
-                Graphics.Blit(srcRT, dstRT);
-                return null;
+                UiBackgroundTexture.Release();
+                Object.Destroy(UiBackgroundTexture);
+                UiBackgroundTexture = null;
             }
 
-            // Screen (behind UI)
-            RenderBehindUIRenderer.Render(settings, gpuMaterial, srcRT, dstRT);
+            Shader.SetGlobalTexture(GlobalUiBackgroundTexId, (Texture?)null);
+            UiBlurOverrideTexture = null;
+        }
 
-            // UI overlay (optional)
-            if (!renderUI)
-                return null;
+        private static void EnsureUIRenderTexture(RenderTexture src)
+        {   // Ensure the UI background RT matches the source
+            var desc = src.descriptor;
+            desc.depthBufferBits = 0;
+            desc.msaaSamples = 1;
+            desc.useMipMap = false;
+            desc.autoGenerateMips = false;
+            desc.colorFormat = RenderTextureFormat.ARGB32;
 
-            return Exclusive.RenderUI(settings, gpuMaterial, srcRT);
+            bool needsRebuild =
+                UiBackgroundTexture == null ||
+                UiBackgroundTexture.width != desc.width ||
+                UiBackgroundTexture.height != desc.height ||
+                UiBackgroundTexture.format != desc.colorFormat;
+
+            if (!needsRebuild)
+                return;
+
+            if (UiBackgroundTexture != null)
+            {
+                UiBackgroundTexture.Release();
+                Object.Destroy(UiBackgroundTexture);
+            }
+
+            UiBackgroundTexture = new(desc)
+            {
+                name = "FrameEmbededState_UIBackground",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            UiBackgroundTexture.Create();
+
+            Debug.Log($"[Exclusive_Render] Created new UiBackgroundTexture: {UiBackgroundTexture.width}x{UiBackgroundTexture.height}");
+        }
+
+        private static void DestroyUiMaterial()
+        {   // Destroy the UI material if it exists
+            if (_uiMat != null)
+            {
+                Object.Destroy(_uiMat);
+                _uiMat = null;
+                Debug.Log("[Exclusive_Render] Destroyed UI material.");
+            }
         }
     }
+
+    public static class BehindUI_Render
+    {
+        private static Material? _sceneMat;
+        private static Shader? _selectedShader;
+
+        public static void RenderScene(RenderTexture src, RenderTexture dest, Shader? selectedShader)
+        {   // Render the scene behind UI, applying shader if provided
+
+            Debug.Log($"[BehindUI_Render] RenderScene called. src: {(src != null ? src.name : "null")}, dest: {(dest != null ? dest.name : "null")}, selectedShader: {(selectedShader != null ? selectedShader.name : "null")}");
+
+            if (src == null || dest == null)
+            {   // Warn if destination is missing so rendering will not occur
+                if (dest == null)
+                    Debug.LogWarning("[BehindUI_Render] WARNING: Destination RenderTexture (dest) is null. Scene will not be rendered.");
+                return;
+            }
+
+            CurrentScreenShader.Value = selectedShader;
+
+            if (selectedShader != _selectedShader || _sceneMat == null)
+            {   // Shader or material changed, rebuild
+                Debug.Log($"[BehindUI_Render] Shader changed. Old: {_selectedShader?.name ?? "null"}, New: {selectedShader?.name ?? "null"}");
+                DestroySceneMaterial();
+                _selectedShader = selectedShader;
+                _sceneMat = selectedShader != null ? new(selectedShader) : null;
+            }
+
+            if (_sceneMat != null)
+                Graphics.Blit(src, dest, _sceneMat);
+            else
+                Graphics.Blit(src, dest);
+
+            Debug.Log("[BehindUI_Render] Scene rendered.");
+        }
+
+        public static void Release()
+            => DestroySceneMaterial();
+
+        private static void DestroySceneMaterial()
+        {   // Destroy the scene material if it exists
+            if (_sceneMat != null)
+            {
+                Object.Destroy(_sceneMat);
+                _sceneMat = null;
+                Debug.Log("[BehindUI_Render] Destroyed scene material.");
+            }
+        }
+    }
+
+
+    public static class Inclusive_Render
+    {
+        public static void Render(RenderTexture src, RenderTexture dest, Shader? selectedShader)
+        {   // Inclusive = apply shader to both scene output and UI background in parallel
+
+            Debug.Log($"[Inclusive_Render] Render called. src: {(src != null ? src.name : "null")}, dest: {(dest != null ? dest.name : "null")}, selectedShader: {(selectedShader != null ? selectedShader.name : "null")}");
+
+            // Always update UI background in parallel
+            Exclusive_Render.RenderUIBackground(src, selectedShader);
+
+            // Always write to dest (or screen if dest is null), using shader if provided
+            if (selectedShader != null)
+            {
+                // Use a temporary material for the blit
+                var mat = new UnityEngine.Material(selectedShader);
+                Graphics.Blit(src, dest, mat);
+                UnityEngine.Object.Destroy(mat);
+            }
+            else
+                Graphics.Blit(src, dest);
+
+            Debug.Log("[Inclusive_Render] Both UI background and scene rendered.");
+        }
+
+        public static void Release()
+        {   // Release all resources for inclusive render
+            Debug.Log("[Inclusive_Render] Release called.");
+            BehindUI_Render.Release();
+            Exclusive_Render.Release();
+        }
+    }
+
+    [UnityEngine.DisallowMultipleComponent]
+    public sealed class FrameEmbededStateOverlayEffect : UnityEngine.MonoBehaviour
+    {
+        [UnityEngine.Header("UI Background (Exclusive)")]
+        public Shader? selectedShader;
+
+        public OverlayRenderMode renderMode = OverlayRenderMode.BehindUI;
+
+        private void OnRenderImage(RenderTexture src, RenderTexture dest)
+        {   // Dispatch to the correct renderer based on mode
+
+            Debug.Log($"[FrameEmbededStateOverlayEffect] OnRenderImage called. Mode: {renderMode}, selectedShader: {(selectedShader != null ? selectedShader.name : "null")}");
+
+            switch (renderMode)
+            {
+                case OverlayRenderMode.BehindUI:
+                    FrameEmbededState.CurrentUiShader.Value = null;
+                    FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
+                    FrameEmbededState.Inclusive_RenderActive.Value = false;
+
+                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: BehindUI");
+                    BehindUI_Render.RenderScene(src, dest, selectedShader);
+                    break;
+
+                case OverlayRenderMode.Exclusive:
+                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Exclusive");
+                    Exclusive_Render.RenderUIBackground(src, selectedShader);
+                    Exclusive_Render.UiBlurOverrideTexture = Exclusive_Render.UiBackgroundTexture;
+                    if (dest != null)
+                        Graphics.Blit(src, dest);
+                    break;
+
+                case OverlayRenderMode.Inclusive:
+                    FrameEmbededState.CurrentUiShader.Value = selectedShader;
+                    FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
+                    FrameEmbededState.Inclusive_RenderActive.Value = selectedShader != null;
+
+                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Inclusive");
+                    Inclusive_Render.Render(src, dest, selectedShader);
+                    Exclusive_Render.UiBlurOverrideTexture = Exclusive_Render.UiBackgroundTexture;
+                    break;
+
+                default:
+                    FrameEmbededState.CurrentUiShader.Value = null;
+                    FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
+                    FrameEmbededState.Inclusive_RenderActive.Value = false;
+
+                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Default (passthrough)");
+                    if (dest != null)
+                        Graphics.Blit(src, dest);
+                    break;
+            }
+        }
+
+        private void OnDisable()
+            => Inclusive_Render.Release();
+    }
+}

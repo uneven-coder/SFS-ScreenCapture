@@ -240,6 +240,76 @@ namespace FrameEmbededState
         }
     }
 
+    public static class CustomRender_Render
+    {
+        private static string _currentModuleKey;
+        private static IShaderModule _currentModule;
+
+        public static void Render(RenderTexture src, RenderTexture dest, string moduleKey, Shader? overrideShader = null)
+        {
+            Debug.Log($"[CustomRender_Render] Render called. Module: {moduleKey}, Shader: {overrideShader?.name ?? "null"}");
+
+            if (string.IsNullOrEmpty(moduleKey))
+            {
+                Debug.LogError("[CustomRender_Render] Module key is null or empty");
+                Graphics.Blit(src, dest);
+                return;
+            }
+
+            var module = ShaderRegistry.Get(moduleKey);
+            if (module == null)
+            {
+                Debug.LogError($"[CustomRender_Render] Module '{moduleKey}' not found in registry");
+                Graphics.Blit(src, dest);
+                return;
+            }
+
+            _currentModuleKey = moduleKey;
+            _currentModule = module;
+
+            if (overrideShader != null)
+            {
+                var shaderProp = module.GetType().GetProperty("_shader", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (shaderProp != null && shaderProp.CanWrite)
+                    shaderProp.SetValue(module, overrideShader);
+            }
+
+            var argsType = module.GetType().BaseType?.GetGenericArguments()[0];
+            if (argsType != null)
+            {
+                var args = OverlayDispatcher.CurrentArgs ?? System.Activator.CreateInstance(argsType);
+                
+                OverlayDispatcher.SelectedModule = module;
+                OverlayDispatcher.CurrentArgs = args;
+
+                var runMethod = module.GetType().GetMethod("Run");
+                if (runMethod != null)
+                {
+                    Debug.Log($"[CustomRender_Render] Invoking Run on module '{moduleKey}'");
+                    runMethod.Invoke(module, new[] { args });
+                }
+                else
+                    Debug.LogError($"[CustomRender_Render] Run method not found on module '{moduleKey}'");
+            }
+
+            Graphics.Blit(src, dest);
+        }
+
+        public static void Release()
+        {
+            Debug.Log("[CustomRender_Render] Release called");
+            
+            if (_currentModule != null && !string.IsNullOrEmpty(_currentModuleKey))
+            {
+                var restoreMethod = _currentModule.GetType().GetMethod("RestoreMaterials");
+                restoreMethod?.Invoke(_currentModule, null);
+            }
+
+            _currentModule = null;
+            _currentModuleKey = null;
+        }
+    }
+
     [UnityEngine.DisallowMultipleComponent]
     public sealed class FrameEmbededStateOverlayEffect : UnityEngine.MonoBehaviour
     {
@@ -248,10 +318,12 @@ namespace FrameEmbededState
 
         public OverlayRenderMode renderMode = OverlayRenderMode.BehindUI;
 
-        private void OnRenderImage(RenderTexture src, RenderTexture dest)
-        {   // Dispatch to the correct renderer based on mode
+        [UnityEngine.Header("Custom Render Settings")]
+        public string customRenderKey = "AtmoShader";
 
-            Debug.Log($"[FrameEmbededStateOverlayEffect] OnRenderImage called. Mode: {renderMode}, selectedShader: {(selectedShader != null ? selectedShader.name : "null")}");
+        private void OnRenderImage(RenderTexture src, RenderTexture dest)
+        {
+            Debug.Log($"[FrameEmbededStateOverlayEffect] OnRenderImage called. Mode: {renderMode}, Key: {customRenderKey}");
 
             switch (renderMode)
             {
@@ -259,42 +331,41 @@ namespace FrameEmbededState
                     FrameEmbededState.CurrentUiShader.Value = null;
                     FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
                     FrameEmbededState.Inclusive_RenderActive.Value = false;
-
-                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: BehindUI");
                     BehindUI_Render.RenderScene(src, dest, selectedShader);
                     break;
 
                 case OverlayRenderMode.Exclusive:
-                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Exclusive");
                     Exclusive_Render.RenderUIBackground(src, selectedShader);
                     Exclusive_Render.UiBlurOverrideTexture = Exclusive_Render.UiBackgroundTexture;
-                    if (dest != null)
-                        Graphics.Blit(src, dest);
+                    if (dest != null) Graphics.Blit(src, dest);
                     break;
 
                 case OverlayRenderMode.Inclusive:
                     FrameEmbededState.CurrentUiShader.Value = selectedShader;
                     FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
                     FrameEmbededState.Inclusive_RenderActive.Value = selectedShader != null;
-
-                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Inclusive");
                     Inclusive_Render.Render(src, dest, selectedShader);
                     Exclusive_Render.UiBlurOverrideTexture = Exclusive_Render.UiBackgroundTexture;
+                    break;
+
+                case OverlayRenderMode.CustomRender:
+                    CustomRender_Render.Render(src, dest, customRenderKey, selectedShader);
                     break;
 
                 default:
                     FrameEmbededState.CurrentUiShader.Value = null;
                     FrameEmbededState.Exclusive_Render.UiBlurOverrideTexture = null;
                     FrameEmbededState.Inclusive_RenderActive.Value = false;
-
-                    Debug.Log("[FrameEmbededStateOverlayEffect] Mode: Default (passthrough)");
-                    if (dest != null)
-                        Graphics.Blit(src, dest);
+                    if (dest != null) Graphics.Blit(src, dest);
                     break;
             }
         }
 
         private void OnDisable()
-            => Inclusive_Render.Release();
+        {
+            Inclusive_Render.Release();
+            if (renderMode == OverlayRenderMode.CustomRender)
+                CustomRender_Render.Release();
+        }
     }
 }

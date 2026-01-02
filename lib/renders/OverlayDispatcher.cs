@@ -29,7 +29,7 @@ namespace FrameEmbededState.Lib.Renders
         Inclusive,
         OnTop,
         Exclusive,
-        ObjectLayer
+        CustomRender
     }
 
     public static class OverlayDispatcher
@@ -75,14 +75,11 @@ namespace FrameEmbededState.Lib.Renders
                 _effectCamera = cam;
             }
 
-            // Only create a blit material for modes that actually modify the scene output.
-            bool needsSceneMat =
-                mode == OverlayRenderMode.BehindUI ||
-                mode == OverlayRenderMode.OnTop ||
-                mode == OverlayRenderMode.ObjectLayer;
+            bool needsSceneMat = mode == OverlayRenderMode.BehindUI || 
+                                 mode == OverlayRenderMode.OnTop;
 
             if (needsSceneMat)
-            {
+            {   // Create scene material for standard modes
                 if (_effectMaterial == null || _currentShader != shader)
                 {
                     if (_effectMaterial != null)
@@ -91,13 +88,12 @@ namespace FrameEmbededState.Lib.Renders
                     _effectMaterial = new Material(shader);
                     _currentShader = shader;
 
-                    // Apply arguments to the new material if available
                     if (SelectedModule != null && CurrentArgs != null)
                         SelectedModule.ApplyArgs(_effectMaterial, CurrentArgs);
                 }
             }
             else
-            {
+            {   // CustomRender handles its own materials
                 if (_effectMaterial != null)
                 {
                     UnityEngine.Object.Destroy(_effectMaterial);
@@ -109,7 +105,7 @@ namespace FrameEmbededState.Lib.Renders
             _attachedEffect.Configure(mode, shader, _effectMaterial);
             _attachedEffect.enabled = true;
 
-            Debug.Log($"[OverlayDispatcher] Shader '{shader.name}' applied as camera image effect with mode '{mode}'.");
+            Debug.Log($"[OverlayDispatcher] Shader '{shader?.name ?? "null"}' applied as camera image effect with mode '{mode}'.");
         }
 
         private static void RemoveCameraImageEffect()

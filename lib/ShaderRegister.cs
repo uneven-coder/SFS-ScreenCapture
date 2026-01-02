@@ -136,6 +136,94 @@ namespace FrameEmbededState
         }
     }
 
+    /// Base class for shader modules that target specific objects in the scene
+    public abstract class ObjectTargetShaderModule<TArgs, TResult> : ShaderModule<TArgs, TResult>
+    {
+        private readonly Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
+        private readonly Dictionary<Renderer, Material[]> _customMaterials = new Dictionary<Renderer, Material[]>();
+        private TArgs _currentArgs;
+        private bool _isApplied;
+
+        public virtual void ApplyToTargets(in TArgs args)
+        {   // Override in subclass to find objects and apply materials
+            _currentArgs = args;
+            _isApplied = true;
+        }
+
+        public virtual void UpdateArgs(in TArgs args)
+        {   // Update shader args on all active custom materials
+            _currentArgs = args;
+            if (!_isApplied) return;
+
+            foreach (var mats in _customMaterials.Values)
+            foreach (var mat in mats)
+                if (mat != null) ApplyArgsToMaterial(mat, args);
+        }
+
+        public virtual void RestoreMaterials()
+        {   // Restore original materials and cleanup custom materials
+            if (!_isApplied) return;
+
+            foreach (var kvp in _originalMaterials)
+                if (kvp.Key != null) kvp.Key.sharedMaterials = kvp.Value;
+
+            foreach (var mats in _customMaterials.Values)
+            foreach (var mat in mats)
+                if (mat != null) UnityEngine.Object.Destroy(mat);
+
+            _originalMaterials.Clear();
+            _customMaterials.Clear();
+            _isApplied = false;
+        }
+
+        protected virtual Material CreateCustomMaterial(Material original, TArgs args)
+        {   // Create custom material using module shader while preserving original properties
+            var shader = Shader;
+            if (shader == null)
+            {
+                Debug.LogWarning($"[ObjectTargetShaderModule] Shader not loaded for '{Name}'. Using original material.");
+                return original != null ? new Material(original) : null;
+            }
+
+            var mat = new Material(shader);
+
+            if (original != null)
+            {   // Preserve common texture and color properties
+                if (original.HasProperty("_MainTex") && mat.HasProperty("_MainTex"))
+                    mat.mainTexture = original.mainTexture;
+
+                if (original.HasProperty("_Color") && mat.HasProperty("_Color"))
+                    mat.color = original.color;
+            }
+
+            ApplyArgsToMaterial(mat, args);
+
+            return mat;
+        }
+
+        protected void StoreAndApplyMaterials(Renderer renderer, Material[] originalMats, TArgs args)
+        {   // Helper to store original materials and apply custom ones
+            if (renderer == null) return;
+
+            _originalMaterials[renderer] = originalMats;
+
+            var customMats = new Material[originalMats.Length];
+            for (int i = 0; i < originalMats.Length; i++)
+                customMats[i] = CreateCustomMaterial(originalMats[i], args);
+
+            _customMaterials[renderer] = customMats;
+            renderer.sharedMaterials = customMats;
+        }
+
+        protected abstract void ApplyArgsToMaterial(Material mat, TArgs args);
+
+        public override void ApplyArgs(Material mat, object args)
+        {   // Bridge to typed method
+            if (args is TArgs typedArgs)
+                ApplyArgsToMaterial(mat, typedArgs);
+        }
+    }
+
     /// Central registry: auto-discovers any IShaderModule with a public parameterless ctor.
     public static class ShaderRegistry
     {

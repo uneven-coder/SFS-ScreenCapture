@@ -68,7 +68,6 @@ namespace FrameEmbededState.Lib
 
             OverlaySortingPatches.Apply(harmony);
             SfsPartShaderPatches.Apply(harmony);
-            AtmosphereRadialShaderPatches.Apply(harmony);
 
             AssetBundleLoadHooks.Apply(harmony);
 
@@ -386,50 +385,6 @@ namespace FrameEmbededState.Lib
 
             if ((nameID == ColorTexId || nameID == MainTexId) && __result == null)
                 __result = Texture2D.whiteTexture;
-        }
-    }
-
-    internal static class AtmosphereRadialShaderPatches
-    {
-        private const string AtmosShaderName = "SFS/Atmosphere";
-
-        private static readonly int PlanetCenterId = Shader.PropertyToID("_PlanetCenter");
-        private static readonly int InnerRadiusId = Shader.PropertyToID("_InnerRadius");
-        private static readonly int OuterRadiusId = Shader.PropertyToID("_OuterRadius");
-
-        public static void Apply(Harmony harmony)
-        {
-            var setPropBlock = AccessTools.Method(typeof(Renderer), nameof(Renderer.SetPropertyBlock), new[] { typeof(MaterialPropertyBlock), typeof(int) });
-            if (setPropBlock != null)
-                harmony.Patch(setPropBlock, postfix: new HarmonyMethod(typeof(AtmosphereRadialShaderPatches), nameof(Renderer_SetPropertyBlock_Postfix)));
-        }
-
-        public static void Renderer_SetPropertyBlock_Postfix(Renderer __instance, MaterialPropertyBlock properties, int materialIndex)
-        {
-            if (__instance == null || properties == null) return;
-
-            var mats = __instance.sharedMaterials;
-            if (mats == null || materialIndex < 0 || materialIndex >= mats.Length) return;
-
-            var mat = mats[materialIndex];
-            if (mat == null || mat.shader == null || mat.shader.name != AtmosShaderName) return;
-
-            var atmos = __instance.GetComponent<SFS.World.Atmosphere>();
-            if (atmos == null || atmos.planet == null) return;
-
-            var mesh = __instance.GetComponent<MeshFilter>()?.sharedMesh;
-            if (mesh == null) return;
-
-            var bounds = mesh.bounds;
-            float scale = __instance.transform.lossyScale.x;
-            float outerRadius = bounds.extents.x * scale;
-            float innerRadius = outerRadius * 0.7f;
-
-            var planetCenter = atmos.planet.transform.position;
-
-            if (mat.HasProperty(PlanetCenterId)) properties.SetVector(PlanetCenterId, planetCenter);
-            if (mat.HasProperty(InnerRadiusId)) properties.SetFloat(InnerRadiusId, innerRadius);
-            if (mat.HasProperty(OuterRadiusId)) properties.SetFloat(OuterRadiusId, outerRadius);
         }
     }
 }

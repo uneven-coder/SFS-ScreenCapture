@@ -321,9 +321,59 @@ namespace FrameEmbededState
         [UnityEngine.Header("Custom Render Settings")]
         public string customRenderKey = "AtmoShader";
 
+        private Camera _attachedCamera;
+        private int _lastFrameActive = -1;
+
+        private void Awake()
+        {   // Cache camera component on initialization
+            _attachedCamera = GetComponent<Camera>();
+            _lastFrameActive = UnityEngine.Time.frameCount;
+        }
+
+        private void OnEnable()
+        {   // Reattach effect when component is enabled ensuring camera is valid
+            _attachedCamera = GetComponent<Camera>();
+            _lastFrameActive = UnityEngine.Time.frameCount;
+            
+            if (_attachedCamera != null && selectedShader != null && renderMode != OverlayRenderMode.CustomRender)
+                OverlayDispatcher.ForceRefresh(_attachedCamera);
+        }
+
+        private void LateUpdate()
+        {   // Detect if camera became inactive and clean up materials, force updates on camera changes
+            
+            if (_attachedCamera == null || !_attachedCamera.enabled || !_attachedCamera.gameObject.activeInHierarchy)
+            {
+                var framesSinceActive = UnityEngine.Time.frameCount - _lastFrameActive;
+                if (framesSinceActive > 2)
+                {   // Camera has been inactive for multiple frames, trigger cleanup
+                    Debug.Log($"[FrameEmbededStateOverlayEffect] Camera {name} inactive, notifying MainUi for camera switch");
+                    MainUi.NotifyCameraInactive();
+                }
+            }
+            else
+            {
+                _lastFrameActive = UnityEngine.Time.frameCount;
+                
+                if (renderMode == OverlayRenderMode.CustomRender && !string.IsNullOrEmpty(customRenderKey))
+                {   // Force bounds update on active custom render camera
+                    var module = ShaderRegistry.Get(customRenderKey);
+                    if (module != null)
+                        OverlayDispatcher.ForceRefresh(_attachedCamera);
+                }
+            }
+        }
+
         private void OnRenderImage(RenderTexture src, RenderTexture dest)
-        {
-            Debug.Log($"[FrameEmbededStateOverlayEffect] OnRenderImage called. Mode: {renderMode}, Key: {customRenderKey}");
+        {   // Validate camera before rendering and handle all modes consistently
+            
+            if (_attachedCamera == null || src == null)
+            {
+                if (dest != null) Graphics.Blit(src != null ? (Texture)src : Texture2D.blackTexture, dest);
+                return;
+            }
+
+            Debug.Log($"[FrameEmbededStateOverlayEffect] OnRenderImage called. Mode: {renderMode}, Key: {customRenderKey}, Camera: {_attachedCamera.name}");
 
             switch (renderMode)
             {
@@ -362,10 +412,15 @@ namespace FrameEmbededState
         }
 
         private void OnDisable()
-        {
+        {   // Clean up resources when disabled
             Inclusive_Render.Release();
             if (renderMode == OverlayRenderMode.CustomRender)
                 CustomRender_Render.Release();
+        }
+
+        private void OnDestroy()
+        {   // Ensure complete cleanup on destruction
+            OnDisable();
         }
     }
 }

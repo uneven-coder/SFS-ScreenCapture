@@ -38,6 +38,7 @@ namespace FrameEmbededState.Lib.Renders
         private static Shader _currentShader;
         private static Material _effectMaterial;
         private static OverlayImageEffect _attachedEffect;
+        private static OverlayRenderMode _currentMode;
 
         // New: Static properties for selected module and current arguments
         public static IShaderModule SelectedModule { get; set; }
@@ -52,13 +53,18 @@ namespace FrameEmbededState.Lib.Renders
             System.Action<Unity.Collections.NativeArray<UnityEngine.Color32>, Unity.Collections.NativeArray<UnityEngine.Color32>, int, int> cpuEffect = null,
             OverlayRenderMode renderMode = OverlayRenderMode.BehindUI)
         {   // Dispatch rendering based on mode, ensuring Exclusive generates UI background RT
+            
             if (selectedShader == null || cam == null)
             {
                 RemoveCameraImageEffect();
-                Inclusive_Render.Release(); // releases Exclusive_Render too (your implementation)
+                Inclusive_Render.Release();
                 FrameEmbededState.CurrentUiShader.Value = null;
                 return;
             }
+
+            // Force reattachment if camera changed or effect was destroyed
+            if (_effectCamera != cam || _attachedEffect == null || _currentMode != renderMode)
+                RemoveCameraImageEffect();
 
             SetupCameraImageEffect(cam, selectedShader, renderMode);
         }
@@ -66,13 +72,11 @@ namespace FrameEmbededState.Lib.Renders
         private static void SetupCameraImageEffect(Camera cam, Shader shader, OverlayRenderMode mode)
         {   // Attach or update a MonoBehaviour to perform OnRenderImage blit
 
-            if (_attachedEffect != null && _effectCamera != cam)
-                RemoveCameraImageEffect();
-
-            if (_attachedEffect == null)
+            if (_attachedEffect == null || _effectCamera != cam)
             {
                 _attachedEffect = cam.gameObject.AddComponent<OverlayImageEffect>();
                 _effectCamera = cam;
+                _currentMode = mode;
             }
 
             bool needsSceneMat = mode == OverlayRenderMode.BehindUI || 
@@ -105,23 +109,37 @@ namespace FrameEmbededState.Lib.Renders
             _attachedEffect.Configure(mode, shader, _effectMaterial);
             _attachedEffect.enabled = true;
 
-            Debug.Log($"[OverlayDispatcher] Shader '{shader?.name ?? "null"}' applied as camera image effect with mode '{mode}'.");
+            Debug.Log($"[OverlayDispatcher] Shader '{shader?.name ?? "null"}' applied to camera '{cam.name}' with mode '{mode}'.");
         }
 
         private static void RemoveCameraImageEffect()
         {   // Remove the MonoBehaviour and material from the camera
+            
             if (_attachedEffect != null)
             {
-                UnityEngine.Object.Destroy(_attachedEffect);
+                if (_attachedEffect.gameObject != null)
+                    UnityEngine.Object.Destroy(_attachedEffect);
                 _attachedEffect = null;
             }
+
             if (_effectMaterial != null)
             {
                 UnityEngine.Object.Destroy(_effectMaterial);
                 _effectMaterial = null;
             }
+
             _effectCamera = null;
             _currentShader = null;
+        }
+
+        public static void ForceRefresh(Camera cam)
+        {   // Force reattachment to current camera with current settings
+            
+            if (cam != null && _currentShader != null)
+            {
+                RemoveCameraImageEffect();
+                SetupCameraImageEffect(cam, _currentShader, _currentMode);
+            }
         }
     }
 

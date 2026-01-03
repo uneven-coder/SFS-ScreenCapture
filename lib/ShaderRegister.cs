@@ -4,7 +4,7 @@ using System.Linq;
 using System.Reflection;
 using UnityEngine;
 using UnityEngine.Scripting;
-using FrameEmbededState; // <-- Fix: ensure ShaderAssetRegistry is visible
+using FrameEmbededState;
 
 
 namespace FrameEmbededState
@@ -19,12 +19,26 @@ namespace FrameEmbededState
         public FrameEmbededState.Lib.Renders.OverlayRenderMode RenderTarget { get; }
 
         public ShaderModuleAttribute(string name, ShaderType type, string loadBy, FrameEmbededState.Lib.Renders.OverlayRenderMode renderTarget)
-        {
-            Name = name;
-            Type = type;
-            LoadBy = loadBy;
-            RenderTarget = renderTarget;
-        }
+        { Name = name; Type = type; LoadBy = loadBy; RenderTarget = renderTarget; }
+    }
+
+    [AttributeUsage(AttributeTargets.Field, Inherited = false, AllowMultiple = false)]
+    public sealed class ShaderArgAttribute : Attribute
+    {
+        public string Group { get; }
+        public string Property { get; }
+        public object DefaultValue { get; }
+        public bool AutoApply { get; }
+
+        public ShaderArgAttribute(string group = "General", string property = null, object defaultValue = null, bool autoApply = true)
+        { Group = group; Property = property; DefaultValue = defaultValue; AutoApply = autoApply; }
+    }
+
+    [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = true)]
+    public sealed class ShaderDependencyAttribute : Attribute
+    {   // Declare dependency on another shader module for arg extension
+        public string ModuleName { get; }
+        public ShaderDependencyAttribute(string moduleName) { ModuleName = moduleName; }
     }
 
     /// Non-generic interface for normal shader registry storage.
@@ -42,6 +56,9 @@ namespace FrameEmbededState
 
         // New: Apply arguments to a material
         void ApplyArgs(Material mat, object args);
+
+        IEnumerable<string> GetDependencies();
+        object GetExtendedArgs(Dictionary<string, object> dependencyArgs);
     }
 
     /// Base class for typed normal shader modules.
@@ -53,6 +70,8 @@ namespace FrameEmbededState
         private string _loadBy;
         private FrameEmbededState.Lib.Renders.OverlayRenderMode _renderTarget;
         private bool _loggedMissing;
+
+        private readonly List<IShaderModule> _subShaders = new List<IShaderModule>();
 
         protected ShaderModule()
         {
@@ -132,17 +151,137 @@ namespace FrameEmbededState
 
         // New: Default implementation for applying arguments; override in subclasses
         public virtual void ApplyArgs(Material mat, object args)
-        {   // Base implementation does nothing; subclasses should override to apply specific args
+        {
+            if (mat == null || args == null) return;
+            if (args is TArgs typedArgs) ApplyArgsAutomatic(mat, typedArgs);
         }
+
+        protected virtual void ApplyArgsAutomatic(Material mat, TArgs args)
+        {   // Apply shader arguments to material using attribute metadata
+            var flatFields = FlattenFieldsWithMetadata(args, "", typeof(TArgs));
+
+            foreach (var kvp in flatFields)
+            {   // Process each flattened field and apply to material
+                var fieldPath = kvp.Key;
+                var fieldValue = kvp.Value.Value;
+                var shaderProp = kvp.Value.ShaderProperty;
+                var autoApply = kvp.Value.AutoApply;
+
+                if (!autoApply || fieldValue == null) continue;
+
+                var propName = !string.IsNullOrEmpty(shaderProp) ? shaderProp : "_" + GetLastFieldName(fieldPath);
+                var propId = Shader.PropertyToID(propName);
+
+                if (!mat.HasProperty(propId)) continue;
+
+                switch (fieldValue)
+                {   // Apply value based on type
+                    case float f: mat.SetFloat(propId, f); break;
+                    case int i: mat.SetFloat(propId, i); break;
+                    case bool b: mat.SetFloat(propId, b ? 1f : 0f); break;
+                    case Color c: mat.SetColor(propId, c); break;
+                    case Vector3 v3: mat.SetVector(propId, new Vector4(v3.x, v3.y, v3.z, 0f)); break;
+                    case Vector4 v4: mat.SetVector(propId, v4); break;
+                    case Texture2D tex: mat.SetTexture(propId, tex); break;
+                }
+            }
+        }
+
+        private static Dictionary<string, (object Value, string ShaderProperty, bool AutoApply)> FlattenFieldsWithMetadata(object obj, string prefix, System.Type rootType)
+        {
+            var result = new Dictionary<string, (object, string, bool)>();
+            if (obj == null) return result;
+
+            var type = obj.GetType();
+            var fields = type.GetFields();
+
+            foreach (var field in fields)
+            {
+                var fieldVal = field.GetValue(obj);
+                var fieldPath = string.IsNullOrEmpty(prefix) ? field.Name : $"{prefix}.{field.Name}";
+
+                var shaderArgAttr = field.GetCustomAttribute<ShaderArgAttribute>();
+                var propName = shaderArgAttr?.Property ?? "";
+                var autoApply = shaderArgAttr?.AutoApply ?? true;
+
+                if (fieldVal == null || IsSimpleType(field.FieldType))
+                    result[fieldPath] = (fieldVal, propName, autoApply);
+                else if (field.FieldType.IsArray)
+                {
+                    var arr = fieldVal as Array;
+                    if (arr != null)
+                    {
+                        for (int i = 0; i < arr.Length; i++)
+                        {
+                            var element = arr.GetValue(i);
+                            var elementPath = $"{fieldPath}[{i}]";
+
+                            if (element != null && !IsSimpleType(element.GetType()))
+                            {
+                                var nested = FlattenFieldsWithMetadata(element, elementPath, rootType);
+                                foreach (var nkvp in nested) result[nkvp.Key] = nkvp.Value;
+                            }
+                            else result[elementPath] = (element, propName, autoApply);
+                        }
+                    }
+                }
+                else if (field.FieldType.IsValueType && !field.FieldType.IsPrimitive && !field.FieldType.IsEnum)
+                {
+                    var nested = FlattenFieldsWithMetadata(fieldVal, fieldPath, rootType);
+                    foreach (var nkvp in nested) result[nkvp.Key] = nkvp.Value;
+                }
+                else result[fieldPath] = (fieldVal, propName, autoApply);
+            }
+
+            return result;
+        }
+
+        private static bool IsSimpleType(System.Type type) =>
+            type.IsPrimitive || type.IsEnum || type == typeof(string) || 
+            type == typeof(Color) || type == typeof(Vector3) || type == typeof(Vector4) ||
+            type == typeof(Texture2D);
+
+        private static string GetLastFieldName(string fieldPath)
+        {
+            var lastDot = fieldPath.LastIndexOf('.');
+            var name = lastDot >= 0 ? fieldPath.Substring(lastDot + 1) : fieldPath;
+            var bracketIdx = name.IndexOf('[');
+            return bracketIdx >= 0 ? name.Substring(0, bracketIdx) : name;
+        }
+
+        public virtual IEnumerable<string> GetDependencies()
+        {   // Return shader dependencies declared via attributes
+            return GetType().GetCustomAttributes<ShaderDependencyAttribute>()
+                .Select(attr => attr.ModuleName);
+        }
+
+        public virtual object GetExtendedArgs(Dictionary<string, object> dependencyArgs)
+        {   // Override in subclasses to merge dependency args into extended args structure
+            return default(TArgs);
+        }
+
+        protected void RegisterSubShader(IShaderModule subShader)
+        {   // Register a sub-shader to be managed by this parent shader
+            if (subShader != null && !_subShaders.Contains(subShader))
+                _subShaders.Add(subShader);
+        }
+
+        protected void UnregisterSubShader(IShaderModule subShader)
+        {   // Remove a sub-shader from management
+            if (subShader != null)
+                _subShaders.Remove(subShader);
+        }
+
+        protected IReadOnlyList<IShaderModule> SubShaders => _subShaders.AsReadOnly();
     }
 
     /// Base class for shader modules that target specific objects in the scene
     public abstract class ObjectTargetShaderModule<TArgs, TResult> : ShaderModule<TArgs, TResult>
     {
-        private readonly Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
-        private readonly Dictionary<Renderer, Material[]> _customMaterials = new Dictionary<Renderer, Material[]>();
-        private TArgs _currentArgs;
-        private bool _isApplied;
+        protected readonly Dictionary<Renderer, Material[]> _originalMaterials = new Dictionary<Renderer, Material[]>();
+        protected readonly Dictionary<Renderer, Material[]> _customMaterials = new Dictionary<Renderer, Material[]>();
+        protected TArgs _currentArgs;
+        protected bool _isApplied;
 
         public virtual void ApplyToTargets(in TArgs args)
         {   // Override in subclass to find objects and apply materials
@@ -156,20 +295,30 @@ namespace FrameEmbededState
             if (!_isApplied) return;
 
             foreach (var mats in _customMaterials.Values)
-            foreach (var mat in mats)
-                if (mat != null) ApplyArgsToMaterial(mat, args);
+            {
+                if (mats == null) continue;
+                foreach (var mat in mats)
+                    if (mat != null) ApplyArgsAutomatic(mat, args);
+            }
         }
 
         public virtual void RestoreMaterials()
-        {   // Restore original materials and cleanup custom materials
+        {   // Restore original materials and cleanup custom materials, including sub-shaders
             if (!_isApplied) return;
+
+            foreach (var subShader in SubShaders)
+                if (subShader is ObjectTargetShaderModule<TArgs, TResult> objSubShader)
+                    objSubShader.RestoreMaterials();
 
             foreach (var kvp in _originalMaterials)
                 if (kvp.Key != null) kvp.Key.sharedMaterials = kvp.Value;
 
             foreach (var mats in _customMaterials.Values)
-            foreach (var mat in mats)
-                if (mat != null) UnityEngine.Object.Destroy(mat);
+            {
+                if (mats == null) continue;
+                foreach (var mat in mats)
+                    if (mat != null) UnityEngine.Object.Destroy(mat);
+            }
 
             _originalMaterials.Clear();
             _customMaterials.Clear();
@@ -177,7 +326,7 @@ namespace FrameEmbededState
         }
 
         protected virtual Material CreateCustomMaterial(Material original, TArgs args)
-        {   // Create custom material using module shader while preserving original properties
+        {
             var shader = Shader;
             if (shader == null)
             {
@@ -188,7 +337,7 @@ namespace FrameEmbededState
             var mat = new Material(shader);
 
             if (original != null)
-            {   // Preserve common texture and color properties
+            {
                 if (original.HasProperty("_MainTex") && mat.HasProperty("_MainTex"))
                     mat.mainTexture = original.mainTexture;
 
@@ -196,7 +345,7 @@ namespace FrameEmbededState
                     mat.color = original.color;
             }
 
-            ApplyArgsToMaterial(mat, args);
+            ApplyArgsAutomatic(mat, args);
 
             return mat;
         }
@@ -218,9 +367,12 @@ namespace FrameEmbededState
         protected abstract void ApplyArgsToMaterial(Material mat, TArgs args);
 
         public override void ApplyArgs(Material mat, object args)
-        {   // Bridge to typed method
+        {
             if (args is TArgs typedArgs)
+            {
+                ApplyArgsAutomatic(mat, typedArgs);
                 ApplyArgsToMaterial(mat, typedArgs);
+            }
         }
     }
 
@@ -279,6 +431,11 @@ namespace FrameEmbededState
         public static IShaderModule Get(string name)
         {   // Only return if already initialized; never auto-initialize
             return (_initialized && name != null && _byName.TryGetValue(name, out var m)) ? m : null;
+        }
+
+        public static T Get<T>(string name) where T : class, IShaderModule
+        {   // Generic typed getter for convenience
+            return Get(name) as T;
         }
 
         public static IReadOnlyCollection<IShaderModule> AllModules

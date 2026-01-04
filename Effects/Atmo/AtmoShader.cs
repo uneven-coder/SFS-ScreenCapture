@@ -29,7 +29,10 @@ namespace FrameEmbededState.Effects.AtmoShader
             [ShaderArg(group: "Physics", property: "_DensityCurve", defaultValue: 1.6f)] public float DensityCurve;
             [ShaderArg(group: "Physics", property: "_ScatterStrength", defaultValue: 0.9f)] public float ScatterStrength;
             [ShaderArg(group: "Physics", property: "_TerminatorWidth", defaultValue: 0.23f)] public float TerminatorWidth;
-            [ShaderArg(group: "Physics", property: "_RefractiveIndex", defaultValue: 3f)] public float RefractiveIndex;
+            [ShaderArg(group: "Physics", property: "_RefractiveIndex", defaultValue: 1.0003f)] public float RefractiveIndex;
+            [ShaderArg(group: "Scattering", property: "_RayleighStrength", defaultValue: 1.0f)] public float RayleighStrength;
+            [ShaderArg(group: "Scattering", property: "_MieStrength", defaultValue: 0.02f)] public float MieStrength;
+            [ShaderArg(group: "Scattering", property: "_MieG", defaultValue: 0.76f)] public float MieAnisotropy;
             [ShaderArg(group: "Clouds", autoApply: true)] public bool EnableClouds;
             [ShaderArg(group: "Clouds", autoApply: true)] public CloudsShader.CloudsShaderModule.Args CloudLayer;
             [ShaderArg(group: "Clouds", autoApply: true)] public ScaledCloudsShader.ScaledCloudsShaderModule.Args CloudLayerScaled;

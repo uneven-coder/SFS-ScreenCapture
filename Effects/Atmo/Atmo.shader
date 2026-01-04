@@ -16,6 +16,9 @@ Shader "Hidden/FrameEmbededState/AtmoShader"
         _ScatterStrength ("Scatter Strength", Float) = 1.5
         _TerminatorWidth ("Terminator Width", Float) = 0.2
         _RefractiveIndex ("Refractive Index", Float) = 1.0003
+        _RayleighStrength ("Rayleigh Strength", Float) = 1.0
+        _MieStrength ("Mie Strength", Float) = 0.02
+        _MieG ("Mie Anisotropy", Float) = 0.76
     }
     SubShader
     {
@@ -61,6 +64,9 @@ Shader "Hidden/FrameEmbededState/AtmoShader"
             float _ScatterStrength;
             float _TerminatorWidth;
             float _RefractiveIndex;
+            float _RayleighStrength;
+            float _MieStrength;
+            float _MieG;
 
             v2f vert(appdata v)
             {   // Transform vertex to clip space and world space for radial calculations
@@ -73,41 +79,65 @@ Shader "Hidden/FrameEmbededState/AtmoShader"
 
             float GetAtmosphereDensity(float normalizedHeight)
             {   // Exponential density falloff with configurable curve
-                float expDensity = exp(-normalizedHeight * _DensityCurve) - exp(-_DensityCurve);
-                return _AtmosphereDensity * max(expDensity, 0.0);
+                float expDensity = exp(-normalizedHeight * _DensityCurve);
+                return _AtmosphereDensity * saturate(expDensity);
             }
 
-            float3 CalculateRayleighExtinction(float opticalDepth)
-            {   // Wavelength-dependent extinction using Rayleigh scattering (wavelength^-4)
+            float3 GetRayleighCoefficients()
+            {   // Wavelength-dependent Rayleigh scattering coefficients (wavelength^-4)
+                // RGB wavelengths in micrometers: Red=0.65, Green=0.532, Blue=0.473
                 float3 wavelengths = float3(0.650, 0.532, 0.473);
-                float3 invWavelength4 = 1.0 / (wavelengths * wavelengths * wavelengths * wavelengths);
-                float nMinusOne = _RefractiveIndex - 1.0;
-                return invWavelength4 * nMinusOne * nMinusOne * _DensityCurve * 0.5;
+                float3 invWavelength4 = 1.0 / pow(wavelengths, 4.0);
+                float nSquaredMinusOne = (_RefractiveIndex * _RefractiveIndex - 1.0);
+                return invWavelength4 * nSquaredMinusOne * _RayleighStrength * 0.0025;
             }
 
-            float3 CalculateSunsetColor(float3 atmoColor, float3 sunColor, float sunAlignment, float density, float heightNorm)
-            {   // Physically-based sunset color by filtering sunlight through atmosphere path
-                float horizonAngle = saturate(1.0 - abs(sunAlignment));
-                float pathMultiplier = 1.0 + horizonAngle * horizonAngle * 15.0;
-                pathMultiplier *= (1.0 - heightNorm * 0.7);
+            float RayleighPhase(float cosTheta)
+            {   // Rayleigh phase function for isotropic scattering
+                return 0.75 * (1.0 + cosTheta * cosTheta);
+            }
+
+            float MiePhase(float cosTheta, float g)
+            {   // Henyey-Greenstein phase function for forward scattering
+                float g2 = g * g;
+                float denom = 1.0 + g2 - 2.0 * g * cosTheta;
+                return (1.0 - g2) / (4.0 * 3.14159 * pow(denom, 1.5));
+            }
+
+            float3 CalculateOpticalDepth(float normalizedHeight, float pathLength)
+            {   // Calculate optical depth for light extinction through atmosphere
+                float density = GetAtmosphereDensity(normalizedHeight);
+                float3 rayleigh = GetRayleighCoefficients();
+                return rayleigh * density * pathLength;
+            }
+
+            float3 CalculateTransmittance(float3 opticalDepth)
+            {   // Beer-Lambert law for light extinction
+                return exp(-opticalDepth);
+            }
+
+            float CalculateLimbDarkening(float normalizedHeight, float3 viewDir, float3 normalFromCenter)
+            {   // Limb darkening - atmosphere appears thicker at edges
+                float edgeFactor = 1.0 - abs(dot(viewDir, normalFromCenter));
+                float limbMultiplier = 1.0 + edgeFactor * edgeFactor * 2.0;
+                return limbMultiplier;
+            }
+
+            float3 CalculateSunsetGradient(float sunAlignment, float normalizedHeight)
+            {   // Physically-based sunset colors from extended light path through atmosphere
+                float horizonFactor = saturate(1.0 - abs(sunAlignment));
+                float pathMultiplier = 1.0 + pow(horizonFactor, 2.0) * 20.0;
                 
-                float baseDensity = GetAtmosphereDensity(heightNorm);
-                float opticalDepth = baseDensity * pathMultiplier * _DensityCurve;
-                float3 extinction = CalculateRayleighExtinction(opticalDepth);
-                float3 transmittance = exp(-extinction * opticalDepth);
-                float3 filteredSun = sunColor.rgb * transmittance;
+                float3 rayleigh = GetRayleighCoefficients();
+                float opticalPath = pathMultiplier * (1.0 - normalizedHeight * 0.5);
+                float3 extinction = exp(-rayleigh * opticalPath * _DensityCurve);
                 
-                float phase = 0.75 * (1.0 + sunAlignment * sunAlignment);
-                float3 scatteredLight = atmoColor.rgb * (1.0 - transmittance) * phase * 0.5;
-                float terminatorBand = smoothstep(-0.15, 0.1, sunAlignment) * smoothstep(0.4, 0.05, sunAlignment);
-                float3 sunsetResult = lerp(filteredSun, filteredSun + scatteredLight, saturate(density));
-                float3 warmBoost = float3(1.0, 0.6, 0.3) * terminatorBand * (1.0 - transmittance.b) * sunColor.rgb;
-                
-                return sunsetResult + warmBoost * 0.8;
+                return extinction;
             }
 
             fixed4 frag(v2f i) : SV_Target
-            {   // Render flat 2D atmosphere with radial height-based coloring using bounds scale
+            {   // Render atmosphere with physically-based scattering
+                // Height-based gradient with sun-angle lighting applied separately
                 fixed4 texColor = tex2D(_MainTex, i.uv);
                 
                 float3 planetCenter = _PlanetCenterWS;
@@ -122,33 +152,71 @@ Shader "Hidden/FrameEmbededState/AtmoShader"
                 float height = distFromCenter - scaledRadius;
                 float normalizedHeight = saturate(height / scaledAtmoHeight);
                 float density = GetAtmosphereDensity(normalizedHeight);
-                float heightFalloff = 1.0 - normalizedHeight;
                 
+                // Sun alignment for lighting calculations only
                 float sunAlignment = dot(normalFromCenter, sunDir);
-                float dayFactor = smoothstep(-_TerminatorWidth, _TerminatorWidth * 2.0, sunAlignment);
                 
-                float terminatorProximity = 1.0 - abs(sunAlignment);
-                float terminatorGlow = pow(terminatorProximity, 2.0) * smoothstep(-0.4, 0.1, sunAlignment);
-                
+                // Gradient samples by HEIGHT (not sun angle) - this is the atmosphere color profile
                 float gradientSample = saturate(normalizedHeight * _GradientMultiplier);
-                float4 heightColor = tex2D(_GradientTex, float2(gradientSample, 0.5));
+                float4 baseColor = tex2D(_GradientTex, float2(gradientSample, 0.5));
                 
-                float3 dayColor = heightColor.rgb * density * dayFactor * heightFalloff;
+                // View direction for limb darkening and phase functions
+                float3 viewDir = normalize(_WorldSpaceCameraPos - i.worldPos);
+                float cosTheta = dot(viewDir, sunDir);
                 
-                float3 sunsetColor = CalculateSunsetColor(heightColor.rgb, _SunColor.rgb, sunAlignment, density, normalizedHeight);
-                float3 terminatorScatter = sunsetColor * terminatorGlow * _ScatterStrength;
+                // Limb darkening effect
+                float limbDarkening = CalculateLimbDarkening(normalizedHeight, viewDir, normalFromCenter);
                 
-                float nightFactor = smoothstep(0.0, -_TerminatorWidth * 3.0, sunAlignment);
-                float3 nightTint = heightColor.rgb * float3(0.3, 0.4, 0.6);
-                float nightIntensity = nightFactor * density * 0.08 * heightFalloff;
-                float3 nightGlow = nightTint * nightIntensity;
+                // Phase functions for scattering
+                float rayleighPhase = RayleighPhase(cosTheta);
+                float miePhase = MiePhase(cosTheta, _MieG);
+                float combinedPhase = rayleighPhase * _RayleighStrength + miePhase * _MieStrength;
                 
-                float3 atmosphereColor = dayColor + terminatorScatter + nightGlow;
+                // Day/night factor - smooth transition but never fully dark
+                // Use wider terminator and higher minimum to keep atmosphere visible
+                float terminatorSoftness = _TerminatorWidth;
+                float dayFactor = smoothstep(-terminatorSoftness * 2.0, terminatorSoftness * 2.0, sunAlignment);
+                float minLighting = 0.15;  // Minimum ambient so atmosphere never goes fully dark
+                float lightingFactor = lerp(minLighting, 1.0, dayFactor);
                 
-                float baseAlpha = dayFactor * density * heightFalloff * heightColor.a;
-                float terminatorAlpha = terminatorGlow * density * 0.4;
-                float nightAlpha = nightIntensity * 0.6;
-                float atmosphereAlpha = saturate(baseAlpha + terminatorAlpha + nightAlpha) * texColor.a;
+                // Height-based falloff
+                float heightFalloff = pow(1.0 - normalizedHeight, 1.5);
+                
+                // Rayleigh scattering coefficients for color
+                float3 rayleighCoeffs = GetRayleighCoefficients();
+                float3 rayleighScatter = rayleighCoeffs * density * heightFalloff;
+                
+                // Sunset/sunrise color calculation - only near terminator
+                float3 sunsetExtinction = CalculateSunsetGradient(sunAlignment, normalizedHeight);
+                float terminatorBand = smoothstep(-0.3, 0.0, sunAlignment) * smoothstep(0.4, 0.05, sunAlignment);
+                
+                // Primary atmosphere color with lighting applied
+                float3 baseAtmosphere = baseColor.rgb * density * heightFalloff * limbDarkening;
+                baseAtmosphere *= (1.0 + rayleighScatter * combinedPhase * _ScatterStrength * 0.5);
+                
+                // Apply day/night lighting to base atmosphere
+                float3 dayColor = baseAtmosphere * lightingFactor;
+                
+                // Sunset/terminator enhancement - warm colors at the boundary
+                float3 sunsetColor = _SunColor.rgb * sunsetExtinction;
+                float3 warmTones = float3(1.0, 0.5, 0.2) * terminatorBand * (1.0 - sunsetExtinction.b);
+                float3 terminatorGlow = (sunsetColor + warmTones * 0.6) * density * heightFalloff * _ScatterStrength * terminatorBand;
+                
+                // Night side subtle blue tint - atmospheric glow from scattered starlight
+                float nightEnhance = smoothstep(0.1, -0.4, sunAlignment);
+                float3 nightTint = baseColor.rgb * float3(0.2, 0.25, 0.4) * nightEnhance * density * heightFalloff * 0.3;
+                
+                // Combine all lighting contributions
+                float3 atmosphereColor = dayColor + terminatorGlow + nightTint;
+                
+                // Forward scattering halo around sun (only on day side)
+                float sunHalo = pow(saturate(cosTheta), 8.0) * miePhase * _MieStrength;
+                atmosphereColor += _SunColor.rgb * sunHalo * density * dayFactor * 0.3;
+                
+                // Alpha calculation - atmosphere always has some visibility
+                float baseAlpha = density * heightFalloff * baseColor.a * limbDarkening;
+                float terminatorAlpha = terminatorBand * density * 0.3;
+                float atmosphereAlpha = saturate(baseAlpha + terminatorAlpha) * texColor.a;
                 
                 float3 finalColor = atmosphereColor * texColor.rgb;
                 

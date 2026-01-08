@@ -41,19 +41,9 @@ namespace FrameEmbededState
         }
 
         public override void Load()
-        {   // Setup overlay and scene hook for edge rendering
-        
-
-            void SetOverlayToCurrentCamera()
-            {   // Set overlay to current world camera and show UI
+        {   // Initialize shader registry and menu entrypoint
             FrameEmbededState.ShaderRegistry.Initialize(force: true);
             MainUi.Init();
-                MainUi.RebuildUI();
-            }
-
-            SceneManager.sceneLoaded += (_, __) => SetOverlayToCurrentCamera();
-            SceneHelper.OnWorldSceneLoaded += SetOverlayToCurrentCamera;
-            SceneHelper.OnBuildSceneLoaded += SetOverlayToCurrentCamera;
         }
     }
 }

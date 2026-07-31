@@ -381,41 +381,122 @@ namespace ScreenCapture
 
                 QualitySettings.antiAliasing = 0;
 
+                bool wantTransparent = BackgroundUI.Transparent;
+                bool showBg = World.OwnerInstance?.showBackground ?? true;
+                bool showTrn = World.OwnerInstance?.showTerrain ?? true;
                 var prevMask = World.MainCamera.cullingMask;
-                World.MainCamera.cullingMask = CaptureUtilities.ComputeCullingMask(World.OwnerInstance?.showBackground ?? true);
-                World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
-                World.MainCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
+                int captureMask = CaptureUtilities.ComputeCullingMask(showBg);
 
-                var modified = CaptureUtilities.ApplySceneVisibilityTemporary(World.OwnerInstance?.showBackground ?? true, World.OwnerInstance?.showTerrain ?? true, Main.HiddenRockets);
+                // Read cropped dimensions first
+                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
+                int finalWidth  = Mathf.RoundToInt(readRect.width);
+                int finalHeight = Mathf.RoundToInt(readRect.height);
 
-                // Render full scene without viewport cropping
                 World.MainCamera.rect = new Rect(0, 0, 1, 1);
-                World.MainCamera.targetTexture = fullRT;
-                World.MainCamera.Render();
+                World.MainCamera.cullingMask = captureMask;
+                World.MainCamera.clearFlags = CameraClearFlags.SolidColor;
 
-                CaptureUtilities.RestoreSceneVisibility(modified);
+                if (wantTransparent)
+                {
+                    // --- Dual-render technique to recover correct per-pixel alpha ---
+                    // Render 1: black background  =>  pixel = src_color * src_a  (pre-multiplied)
+                    // Render 2: white background  =>  pixel = src_color * src_a + (1 - src_a)
+                    // alpha  = 1 - (white.r - black.r)   (using red channel; average all three for robustness)
+                    // color  = black / alpha  (un-premultiply)
+
+                    RenderTexture whiteRT = new RenderTexture(renderWidth, renderHeight, 24, RenderTextureFormat.ARGB32);
+                    whiteRT.Create();
+
+                    // Render on BLACK
+                    World.MainCamera.backgroundColor = new Color(0f, 0f, 0f, 0f);
+                    var modifiedBlack = CaptureUtilities.ApplySceneVisibilityTemporary(showBg, showTrn, Main.HiddenRockets);
+                    World.MainCamera.targetTexture = fullRT;
+                    World.MainCamera.Render();
+                    CaptureUtilities.RestoreSceneVisibility(modifiedBlack);
+
+                    // Render on WHITE
+                    World.MainCamera.backgroundColor = new Color(1f, 1f, 1f, 1f);
+                    var modifiedWhite = CaptureUtilities.ApplySceneVisibilityTemporary(showBg, showTrn, Main.HiddenRockets);
+                    World.MainCamera.targetTexture = whiteRT;
+                    World.MainCamera.Render();
+                    CaptureUtilities.RestoreSceneVisibility(modifiedWhite);
+
+                    // Read both renders
+                    var blackTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+                    RenderTexture.active = fullRT;
+                    blackTex.ReadPixels(readRect, 0, 0);
+                    blackTex.Apply();
+
+                    var whiteTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+                    RenderTexture.active = whiteRT;
+                    whiteTex.ReadPixels(readRect, 0, 0);
+                    whiteTex.Apply();
+                    RenderTexture.active = null;
+
+                    whiteRT.Release();
+                    UnityEngine.Object.Destroy(whiteRT);
+
+                    // Composite: recover true (r,g,b,a) per pixel
+                    finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+                    Color32[] blackPx = blackTex.GetPixels32();
+                    Color32[] whitePx = whiteTex.GetPixels32();
+                    Color32[] outPx   = new Color32[blackPx.Length];
+
+                    for (int i = 0; i < blackPx.Length; i++)
+                    {
+                        // alpha estimated from difference (average channels for robustness)
+                        float dr = (whitePx[i].r - blackPx[i].r) / 255f;
+                        float dg = (whitePx[i].g - blackPx[i].g) / 255f;
+                        float db = (whitePx[i].b - blackPx[i].b) / 255f;
+                        float a  = 1f - (dr + dg + db) / 3f;
+                        a = Mathf.Clamp01(a);
+
+                        byte outA = (byte)Mathf.RoundToInt(a * 255f);
+                        byte outR, outG, outB;
+                        if (a > 0.001f)
+                        {
+                            outR = (byte)Mathf.Clamp(Mathf.RoundToInt(blackPx[i].r / a), 0, 255);
+                            outG = (byte)Mathf.Clamp(Mathf.RoundToInt(blackPx[i].g / a), 0, 255);
+                            outB = (byte)Mathf.Clamp(Mathf.RoundToInt(blackPx[i].b / a), 0, 255);
+                        }
+                        else
+                        {
+                            outR = outG = outB = 0;
+                        }
+                        outPx[i] = new Color32(outR, outG, outB, outA);
+                    }
+                    finalTex.SetPixels32(outPx);
+                    finalTex.Apply();
+
+                    UnityEngine.Object.Destroy(blackTex);
+                    UnityEngine.Object.Destroy(whiteTex);
+                }
+                else
+                {
+                    // --- Single render on user's solid colour, force alpha=255 ---
+                    World.MainCamera.backgroundColor = BackgroundUI.GetBackgroundColor();
+                    var modified = CaptureUtilities.ApplySceneVisibilityTemporary(showBg, showTrn, Main.HiddenRockets);
+                    World.MainCamera.targetTexture = fullRT;
+                    World.MainCamera.Render();
+                    CaptureUtilities.RestoreSceneVisibility(modified);
+
+                    finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
+                    RenderTexture.active = fullRT;
+                    finalTex.ReadPixels(readRect, 0, 0);
+                    finalTex.Apply();
+                    RenderTexture.active = null;
+
+                    // Force fully opaque
+                    Color32[] pixels = finalTex.GetPixels32();
+                    for (int i = 0; i < pixels.Length; i++)
+                        pixels[i].a = 255;
+                    finalTex.SetPixels32(pixels);
+                    finalTex.Apply();
+                }
+
                 World.MainCamera.cullingMask = prevMask;
                 World.MainCamera.clearFlags = prevClearFlags;
                 World.MainCamera.backgroundColor = prevBgColor;
-
-                if (fullRT == null || !fullRT.IsCreated())
-                {
-                    UnityEngine.Debug.LogError("Render texture is invalid. Cannot read pixels.");
-                    StartWindowColorAnimation(false);
-                    return;
-                }
-
-                // Read cropped area from rendered texture
-                var readRect = CaptureUtilities.GetCroppedReadRect(renderWidth, renderHeight);
-                
-                int finalWidth = Mathf.RoundToInt(readRect.width);
-                int finalHeight = Mathf.RoundToInt(readRect.height);
-                finalTex = new Texture2D(finalWidth, finalHeight, TextureFormat.RGBA32, false);
-
-                RenderTexture.active = fullRT;
-                finalTex.ReadPixels(readRect, 0, 0);
-                finalTex.Apply();
-                RenderTexture.active = null;
 
                 byte[] pngBytes = finalTex.EncodeToPNG();
                 
@@ -427,9 +508,8 @@ namespace ScreenCapture
                 }
 
                 // Save file
-                string worldName = (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
-                string sanitizedName = string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
-                                      new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
+                string worldName = FileUtilities.GetWorldName();
+                string sanitizedName = FileUtilities.SanitizeFileName(worldName);
                 var worldFolder = FileUtilities.InsertIo(sanitizedName, Main.ScreenCaptureFolder);
                 string fileName = $"{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.png";
 

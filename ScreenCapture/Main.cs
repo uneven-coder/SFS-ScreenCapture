@@ -16,7 +16,7 @@ namespace ScreenCapture
     public class Main : Mod, IUpdatable
     {
         public static int PreviewWidth { get; set; } = 256;
-        public static FolderPath ScreenCaptureFolder { get; private set; }
+        public static FolderPath ScreenCaptureFolder => FileUtilities.savingFolder;
 
         private static Captue s_captureInstance;
         private static int s_resolutionWidth = 1980;
@@ -95,7 +95,7 @@ namespace ScreenCapture
         public override string ModNameID => "ScreenCapture";
         public override string DisplayName => "ScreenCapture";
         public override string Author => "Cratior";
-        public override string MinimumGameVersionNecessary => "1.5.10";
+        public override string MinimumGameVersionNecessary => "1.5.11";
         public override string ModVersion => "1.7.10"; // release, updates, fixes/changes
         public override string Description => "Adds a screenshot button, allowing you to take screenshots at custom resolutions. With many features for customization that would make any youtuber proud.";
 
@@ -115,7 +115,6 @@ namespace ScreenCapture
 
         public override void Load()
         {
-            ScreenCaptureFolder = FileUtilities.InsertIo("ScreenCaptures", FileUtilities.savingFolder);
             SceneHelper.OnSceneLoaded += ManageUI;
 
             if (s_captureInstance == null)

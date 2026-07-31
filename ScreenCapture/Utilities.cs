@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -92,11 +92,31 @@ namespace ScreenCapture
                     if (val != null)
                     {
                         string pathStr = val.ToString();
-                        if (!string.IsNullOrEmpty(pathStr))
+                        if (string.IsNullOrEmpty(pathStr) || pathStr.Contains("DefaultFolder"))
+                        {
+                            var p = val.GetType().GetProperty("Path", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                 ?? val.GetType().GetProperty("FolderPath", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                 ?? val.GetType().GetProperty("Folder", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (p != null) pathStr = p.GetValue(val)?.ToString();
+                            else
+                            {
+                                var f = val.GetType().GetField("path", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                                     ?? val.GetType().GetField("folder", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                if (f != null) pathStr = f.GetValue(val)?.ToString();
+                            }
+                        }
+
+                        if (!string.IsNullOrEmpty(pathStr) && !pathStr.Contains("DefaultFolder"))
                             return new FolderPath(pathStr);
                     }
                 }
                 catch { }
+
+
+                    string gameDir = Directory.GetParent(Application.dataPath)?.FullName;
+                    if (!string.IsNullOrEmpty(gameDir))
+                        return new FolderPath(Path.Combine(gameDir, "Saving"));
+
                 return new FolderPath(Path.Combine(Application.persistentDataPath, "Saving"));
             }
         }
@@ -107,20 +127,20 @@ namespace ScreenCapture
         public static string GetWorldName() => (SFS.Base.worldBase?.paths?.worldName) ?? "Unknown";
 
         public static FolderPath CreateWorldFolder(string worldName) =>
-            InsertIo(SanitizeFileName(worldName), Main.ScreenCaptureFolder);
+            InsertIo(SanitizeFileName(worldName), savingFolder);
 
         public static void OpenCurrentWorldCapturesFolder()
         {   // Open the current world's capture folder in file explorer
             try
             {
-                var folder = InsertIo(SanitizeFileName(GetWorldName()), Main.ScreenCaptureFolder);
+                var folder = InsertIo(SanitizeFileName(GetWorldName()), savingFolder);
                 string url = "file:///" + folder.ToString().Replace('\\', '/');
                 Application.OpenURL(url);
             }
             catch { }
         }
 
-        private static string SanitizeFileName(string worldName) =>
+        public static string SanitizeFileName(string worldName) =>
             string.IsNullOrWhiteSpace(worldName) ? "Unknown" :
             new string(worldName.Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
 

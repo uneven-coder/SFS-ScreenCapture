@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -81,7 +81,25 @@ namespace ScreenCapture
 
     public static class FileUtilities
     {
-        public static FolderPath savingFolder = (FolderPath)typeof(FileLocations).GetProperty("SavingFolder", BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null);
+        public static FolderPath savingFolder
+        {
+            get
+            {
+                try
+                {
+                    var prop = typeof(FileLocations).GetProperty("SavingFolder", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    var val = prop?.GetValue(null);
+                    if (val != null)
+                    {
+                        string pathStr = val.ToString();
+                        if (!string.IsNullOrEmpty(pathStr))
+                            return new FolderPath(pathStr);
+                    }
+                }
+                catch { }
+                return new FolderPath(Path.Combine(Application.persistentDataPath, "Saving"));
+            }
+        }
 
         public static FolderPath InsertIo(string folderName, FolderPath baseFolder) => InsertIntoSfS(folderName, baseFolder);
         public static FolderPath InsertIo(string fileName, Stream inputStream, FolderPath folder) => InsertIntoSfS(fileName, folder, null, inputStream);
@@ -111,7 +129,12 @@ namespace ScreenCapture
             if (inputStream != null && !inputStream.CanRead)
                 throw new ArgumentException("inputStream must be readable.", nameof(inputStream));
 
-            var baseFull = baseFolder.ToString();
+            baseFolder ??= savingFolder;
+            var baseFull = baseFolder?.ToString();
+            if (string.IsNullOrEmpty(baseFull))
+            {
+                baseFull = Path.Combine(Application.persistentDataPath, "Saving");
+            }
             if (!Directory.Exists(baseFull)) Directory.CreateDirectory(baseFull);
 
             var combinedFull = Path.Combine(baseFull, relativePath);

@@ -17,6 +17,7 @@ using SFS.Builds;
 using TranslucentImage;
 using SFS; // added to reference InteriorManager
 using System.Diagnostics;
+using Debug = UnityEngine.Debug;
 using static ScreenCapture.CaptureUtilities;
 using UITools;
 
